@@ -67,16 +67,15 @@ static CameraIntrinsics intr = {646.104, 418.067, 328.663, 174.894};
 /* Debug Dump File */
 static uint32_t dumpfile_mode = 0;
 #define DUMP_LR_RAW_NV12			(1<<0)
-#define DUMP_DEPTH_FILE				(1<<0)
-#define DUMP_POINTCLOUD_FILE		(1<<0)
+#define DUMP_DEPTH_FILE				(1<<1)
+#define DUMP_POINTCLOUD_FILE		(1<<2)
 
 /* Debug Verbose */
 static uint32_t verbose_mode = 0;
 #define VERBOSE_STREAM				(1<<0)
 #define VERBOSE_LR_RAW_NV12			(1<<1)
 #define VERBOSE_DEPTH_POINTCLOUD	(1<<2)
-#define VERBOSE_IMU					(1<<0)
-
+#define VERBOSE_IMU					(1<<3)
 
 static int preview_flag = 0;
 
@@ -441,41 +440,43 @@ void *consumer_process(void *context)
 		#if 1
 		/* Depth To Preview */
 		if (0 == client_get_buffer_size_by_type((uint8_t *)data_item->items, STREAM_NODE_DEPTH, (void **)&depth_buffer, &depth_size)) {
+		
+			if (preview_flag && depth_buffer != nullptr && depth_size > 0) {
 	
-	
-			cv::Mat depth_gray(STEREO_RES_HEIGHT, STEREO_RES_WIDTH, CV_16UC1, depth_buffer);
+				cv::Mat depth_gray(STEREO_RES_HEIGHT, STEREO_RES_WIDTH, CV_16UC1, depth_buffer);
 
-		    	// 归一化 16bit -> 8bit
-			cv::Mat depth_gray_8u;
-		    	double min_val, max_val;
-		    	cv::minMaxLoc(depth_gray, &min_val, &max_val);
-		    	depth_gray.convertTo(depth_gray_8u, CV_8UC1, 255.0 / (max_val - min_val), -min_val * 255.0 / (max_val - min_val));
+			    	// 归一化 16bit -> 8bit
+				cv::Mat depth_gray_8u;
+			    	double min_val, max_val;
+			    	cv::minMaxLoc(depth_gray, &min_val, &max_val);
+			    	depth_gray.convertTo(depth_gray_8u, CV_8UC1, 255.0 / (max_val - min_val), -min_val * 255.0 / (max_val - min_val));
 
-			// EMA 平滑
-			if (!depth_gray_8u_prev.empty()) {
-				cv::addWeighted(depth_gray_8u, 0.5, depth_gray_8u_prev, 0.5, 0, depth_gray_8u);
+				// EMA 平滑
+				if (!depth_gray_8u_prev.empty()) {
+					cv::addWeighted(depth_gray_8u, 0.5, depth_gray_8u_prev, 0.5, 0, depth_gray_8u);
+				}
+				depth_gray_8u.copyTo(depth_gray_8u_prev);
+
+				// Jet伪彩色
+				cv::Mat depth_color;
+				cv::applyColorMap(depth_gray_8u, depth_color, cv::COLORMAP_JET);
+
+				// 合成上下显示
+				depth_color.copyTo(preview_buffer(cv::Rect(0, 0, STEREO_RES_WIDTH, STEREO_RES_HEIGHT)));
+				cv::Mat depth_gray_bgr;
+				cv::cvtColor(depth_gray_8u, depth_gray_bgr, cv::COLOR_GRAY2BGR);
+				depth_gray_bgr.copyTo(preview_buffer(cv::Rect(0, STEREO_RES_HEIGHT, STEREO_RES_WIDTH, STEREO_RES_HEIGHT)));
+
+				// 显示
+				cv::imshow("Depth Preview (Top: Jet, Bottom: Gray)", preview_buffer);
+				cv::waitKey(1);
 			}
-			depth_gray_8u.copyTo(depth_gray_8u_prev);
-
-			// Jet伪彩色
-			cv::Mat depth_color;
-			cv::applyColorMap(depth_gray_8u, depth_color, cv::COLORMAP_JET);
-
-			// 合成上下显示
-			depth_color.copyTo(preview_buffer(cv::Rect(0, 0, STEREO_RES_WIDTH, STEREO_RES_HEIGHT)));
-			cv::Mat depth_gray_bgr;
-			cv::cvtColor(depth_gray_8u, depth_gray_bgr, cv::COLOR_GRAY2BGR);
-			depth_gray_bgr.copyTo(preview_buffer(cv::Rect(0, STEREO_RES_HEIGHT, STEREO_RES_WIDTH, STEREO_RES_HEIGHT)));
-
-			// 显示
-			cv::imshow("Depth Preview (Top: Jet, Bottom: Gray)", preview_buffer);
-			cv::waitKey(1);
 		}
 		
 		#endif
 
 
-		#if 
+		#if 1
 		/* Depth To Cloudpoint */
 		if (0 == client_get_buffer_size_by_type((uint8_t *)data_item->items, STREAM_NODE_DEPTH, (void **)&depth_buffer, &depth_size)) {
 			performance_test_start_simple(&performace_total_depth2cloud);

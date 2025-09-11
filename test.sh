@@ -4,4 +4,4 @@ SERVER_IP="192.168.5.5"
 
 sudo ifconfig ${INTERFACE} mtu 9000
 
-./TestProject -i ${INTERFACE} -s ${SERVER_IP} -p
+./stereo_client -i ${INTERFACE} -s ${SERVER_IP} -p

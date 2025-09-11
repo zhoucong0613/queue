@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.10)
 
 # 工程名
-project(TestProject LANGUAGES CXX)
+project(stereo_client LANGUAGES CXX)
 
 # 设置 C++ 标准
 set(CMAKE_CXX_STANDARD 11)
