@@ -80,14 +80,14 @@ ifconfig usb0 mtu 9000
 ./stereo_client -i usb0 -s 192.168.5.5 -p -v 4
 ```
 
-   2.连接服务器，并每 10 帧导出一次深度和点云：
+2. 连接服务器，并每 10 帧导出一次深度和点云：
 
 ```
 ifconfig usb0 mtu 9000
 ./stereo_client -i usb0 -s 192.168.5.5 -d 6
 ```
 
-1. 最小运行（只接收数据）：
+3. 最小运行（只接收数据）：
 
 ```
 ifconfig usb0 mtu 9000
@@ -113,6 +113,7 @@ ifconfig usb0 mtu 9000
 
 ## 📌 注意事项
 
+- 客户端需要和服务器在同一网段下  `ifconfig usb0 192.168.5.10`
 - 客户端确保能够连接服务器，`ping 192.168.5.5`
 
 - 客户端网口的mtu需设置成9000，`ifconfig usb0 mtu 9000`
