@@ -18,6 +18,10 @@
 #include <netinet/in.h>
 #include <png.h>
 #include <opencv2/opencv.hpp>
+#include <iostream>
+#include <vector>
+#include <omp.h>
+#include <iomanip>
 
 #include "common.h"
 #include "performance_test_util.h"
@@ -79,24 +83,72 @@ static uint32_t verbose_mode = 0;
 
 static int preview_flag = 0;
 
+#define MODE_RAW_DEPTH	1
+#define MODE_ISP_DEPTH	2
+#define MODE_DEFAULT MODE_RAW_DEPTH
+#define MODE_JSON_STR_LEN	128
+
+static int selected_mode = MODE_DEFAULT;
+
 void signal_handle(int signo) {
 	running = 0;
 }
 
-#include <opencv2/opencv.hpp>
-#include <iostream>
-#include <vector>
-#include <omp.h>
-#include <iomanip>
+void show_single_camera(uint8_t *cam_buffer, uint32_t cam_size, int mode, const char *win_name)
+{
 
-// 仅使用深度信息，outdoor模式，显示原始深度图+可视化深度图（横向拼接）
+    if (!cam_buffer || cam_size <= 0 || !win_name) {
+        std::cerr << "[Camera] Invalid input for " << win_name << "!" << std::endl;
+        return;
+    }
+    if (mode != 1 && mode != 2) {
+        std::cerr << "[Camera] Unsupported mode " << mode << " for " << win_name << std::endl;
+        return;
+    }
+
+
+    int src_w, src_h;
+    if (mode == 1) {
+        src_w = 1280;
+        src_h = 1088;
+    } else { // mode == 2
+        src_w = 1088;
+        src_h = 1280;
+    }
+
+    uint32_t expected_size = src_w * src_h * 3 / 2;
+    if (cam_size != expected_size) {
+        std::cerr << "[Camera] " << win_name << " size mismatch! Expected " 
+                  << expected_size << " bytes, got " << cam_size << std::endl;
+        return;
+    }
+
+
+    cv::Mat nv12_mat(src_h * 3 / 2, src_w, CV_8UC1, cam_buffer);
+    cv::Mat bgr_mat;
+    cv::cvtColor(nv12_mat, bgr_mat, cv::COLOR_YUV2BGR_NV12);
+
+
+    if (mode == 2) {
+        cv::rotate(bgr_mat, bgr_mat, cv::ROTATE_90_CLOCKWISE);
+    }
+
+    cv::namedWindow(win_name, cv::WINDOW_NORMAL);
+   
+    int display_w = std::min(1280, bgr_mat.cols);
+    int display_h = bgr_mat.rows * display_w / bgr_mat.cols;
+    cv::resizeWindow(win_name, display_w, display_h);
+    cv::imshow(win_name, bgr_mat);
+    cv::waitKey(1);
+}
+
 void show_depth_map(uint16_t *depth_buffer, size_t depth_size, int width, int height) {
-    // 输入有效性检查
+
     if (!depth_buffer || depth_size <= 0 || width <= 0 || height <= 0) {
         std::cerr << "Invalid depth buffer or size/width/height!" << std::endl;
         return;
     }
-    // 检查数据大小是否匹配（每个像素2字节）
+
     size_t expected_size = width * height * sizeof(uint16_t);
     if (depth_size != expected_size) {
         std::cerr << "Depth size mismatch! Expected " << expected_size << " bytes, got " << depth_size << std::endl;
@@ -106,41 +158,36 @@ void show_depth_map(uint16_t *depth_buffer, size_t depth_size, int width, int he
     // 转换为OpenCV Mat（16位单通道，单位：毫米）
     cv::Mat depth_raw(height, width, CV_16UC1, depth_buffer);
 
-    // ====================== 1. 原始深度图（归一化到8位显示）======================
     cv::Mat raw_depth_3ch;
     {
-        // 提取有效深度（排除0值）
+
         cv::Mat valid_depth;
         depth_raw.copyTo(valid_depth, depth_raw > 0);
         
         if (valid_depth.empty()) {
-            // 全无效时显示黑色
+
             raw_depth_3ch = cv::Mat::zeros(height, width, CV_8UC3);
         } else {
-            // 归一化到[0,255]
+
             double min_depth, max_depth;
             cv::minMaxLoc(valid_depth, &min_depth, &max_depth);
             cv::Mat depth_normalized;
             valid_depth.convertTo(depth_normalized, CV_8UC1, 
                                 255.0 / (max_depth - min_depth), 
                                 -min_depth * 255.0 / (max_depth - min_depth));
-            // 无效区域（0值）设为黑色
             depth_normalized.setTo(0, depth_raw == 0);
-            // 转为3通道（方便拼接）
             cv::cvtColor(depth_normalized, raw_depth_3ch, cv::COLOR_GRAY2BGR);
         }
     }
 
-    // ====================== 2. 可视化深度图（outdoor模式，通用像素处理）======================
     cv::Mat visual_depth;
     {
-        // 转换深度为浮点数（米），并反转（模拟视差特性：近大远小）
+
         cv::Mat depth_m;
         depth_raw.convertTo(depth_m, CV_32F, 1.0 / 1000.0); // 毫米→米
         cv::Mat inv_depth = 1.0f / (depth_m + 1e-6f); // 反转深度
         inv_depth.setTo(0, depth_raw == 0); // 无效区域置0
 
-        // 提取有效反转深度值，计算分位数（outdoor模式核心逻辑）
         std::vector<float> depth_vals;
         depth_vals.reserve(height * width);
         float min_val = std::numeric_limits<float>::max();
@@ -172,7 +219,6 @@ void show_depth_map(uint16_t *depth_buffer, size_t depth_size, int width, int he
             }
         }
 
-        // 计算10%、50%、90%分位数（控制亮度分布）
         auto getQuantile = [&](double q) {
             if (depth_vals.empty()) return 0.0f;
             size_t idx = static_cast<size_t>(q * (depth_vals.size() - 1));
@@ -183,20 +229,17 @@ void show_depth_map(uint16_t *depth_buffer, size_t depth_size, int width, int he
         float q50 = getQuantile(0.50);
         float q90 = getQuantile(0.90);
 
-        // 分段缩放系数
         double scale10 = 0.25 * 255.0 / (q10 - min_val + 1e-6);
         double scale50 = 0.25 * 255.0 / (q50 - q10 + 1e-6);
         double scale90 = 0.25 * 255.0 / (q90 - q50 + 1e-6);
         double scaleMax = 0.25 * 255.0 / (max_val - q90 + 1e-6);
 
-        // 生成基础灰度图（移除NEON，改用普通循环）
         visual_depth.create(height, width, CV_8UC3);
 #pragma omp parallel for
         for (int r = 0; r < height; ++r) {
             const float *row_ptr = inv_depth.ptr<float>(r);
             cv::Vec3b *out_ptr = visual_depth.ptr<cv::Vec3b>(r);
 
-            // 逐个处理像素（兼容所有架构）
             for (int c = 0; c < width; ++c) {
                 float pixel = row_ptr[c];
                 uint8_t val = 0;
@@ -214,41 +257,35 @@ void show_depth_map(uint16_t *depth_buffer, size_t depth_size, int width, int he
             }
         }
 
-        // 应用JET伪彩色（outdoor模式默认配色）
         static cv::Mat lut;
         if (lut.empty()) {
             cv::Mat tmp(1, 256, CV_8UC1);
-            for (int i = 0; i < 256; i++) tmp.at<uchar>(i) = i; // 正向映射
+            for (int i = 0; i < 256; i++) tmp.at<uchar>(i) = i;
             cv::applyColorMap(tmp, lut, cv::COLORMAP_JET);
         }
         cv::LUT(visual_depth, lut, visual_depth);
 
-        // 无效区域（深度=0）设为黑色
         cv::Mat mask = (depth_raw == 0);
         visual_depth.setTo(cv::Vec3b(0, 0, 0), mask);
     }
 
-    // ====================== 3. 网格与深度标注 =======================
-    const int set_num = 6; // 网格数量
-    double font_scale = std::min(width, height) / 700.0; // 自适应字体大小
+    const int set_num = 6;
+    double font_scale = std::min(width, height) / 700.0;
     int x_step = width / set_num;
     int y_step = height / set_num;
 
-    // 绘制网格线
+
     for (int i = 1; i < set_num; ++i) {
-        // 原始深度图网格
         cv::line(raw_depth_3ch, cv::Point(i * x_step, 0), cv::Point(i * x_step, height), 
                  cv::Scalar(255, 255, 255), 1);
         cv::line(raw_depth_3ch, cv::Point(0, i * y_step), cv::Point(width, i * y_step), 
                  cv::Scalar(255, 255, 255), 1);
-        // 可视化深度图网格
         cv::line(visual_depth, cv::Point(i * x_step, 0), cv::Point(i * x_step, height), 
                  cv::Scalar(255, 255, 255), 1);
         cv::line(visual_depth, cv::Point(0, i * y_step), cv::Point(width, i * y_step), 
                  cv::Scalar(255, 255, 255), 1);
     }
 
-    // 标注深度值（单位：米）
     for (int i = 1; i < set_num; ++i) {
         for (int j = 1; j < set_num; ++j) {
             int x = i * x_step;
@@ -259,31 +296,27 @@ void show_depth_map(uint16_t *depth_buffer, size_t depth_size, int width, int he
             std::stringstream depth_text;
             depth_text << std::fixed << std::setprecision(2) << depth_val << "m";
 
-            // 标注到原始深度图
             cv::putText(raw_depth_3ch, depth_text.str(), cv::Point(x + 5, y - 5), 
                         cv::FONT_HERSHEY_SIMPLEX, font_scale, cv::Scalar(255, 255, 255), 2);
-            // 标注到可视化深度图
             cv::putText(visual_depth, depth_text.str(), cv::Point(x + 5, y - 5), 
                         cv::FONT_HERSHEY_SIMPLEX, font_scale, cv::Scalar(255, 255, 255), 2);
         }
     }
 
-    // ====================== 4. 拼接并显示 ======================
     cv::Mat combined_img;
     cv::hconcat(raw_depth_3ch, visual_depth, combined_img); // 左：原始深度，右：可视化深度
 
-    // 添加标题
     cv::putText(combined_img, "Raw Depth (Normalized)", cv::Point(20, 30), 
                 cv::FONT_HERSHEY_SIMPLEX, font_scale, cv::Scalar(0, 255, 0), 2);
     cv::putText(combined_img, "Visual Depth (Outdoor)", cv::Point(width + 20, 30), 
                 cv::FONT_HERSHEY_SIMPLEX, font_scale, cv::Scalar(0, 255, 0), 2);
 
-    // 显示窗口
     cv::namedWindow("Depth Map (Raw + Visual)", cv::WINDOW_NORMAL);
-    cv::resizeWindow("Depth Map (Raw + Visual)", width * 2, height); // 宽度翻倍，高度不变
+    cv::resizeWindow("Depth Map (Raw + Visual)", width * 2, height); 
     cv::imshow("Depth Map (Raw + Visual)", combined_img);
-    cv::waitKey(1); // 非阻塞显示
+    cv::waitKey(1); 
 }
+
 #if 0
 int read_png_depth(const char* filename, uint16_t **depth_data, int* width, int* height) {
     FILE *fp = fopen(filename, "rb");
@@ -606,7 +639,7 @@ void *consumer_process(void *context)
 	PointCloud *pc = (PointCloud *)malloc(sizeof(PointCloud) * STEREO_RES_WIDTH * STEREO_RES_HEIGHT);
 
     struct PerformanceTestParamSimple performace_total_consumer = {
-    		.test_count = 0,
+    	.test_count = 0,
 		.iteration_number = 30 * 60,
 		.test_case = "consumer",
 		.run_count = 0,
@@ -638,7 +671,7 @@ void *consumer_process(void *context)
 		
 		static cv::Mat preview_buffer(STEREO_RES_HEIGHT * 2, STEREO_RES_WIDTH, CV_8UC3);
 		static cv::Mat depth_gray_8u_prev;
-		#if 1
+		#if 0
 		/* Depth To Preview */
 		if (0 == client_get_buffer_size_by_type((uint8_t *)data_item->items, STREAM_NODE_DEPTH, (void **)&depth_buffer, &depth_size)) {
 		
@@ -650,7 +683,6 @@ void *consumer_process(void *context)
 		}
 		
 		#endif
-
 
 		#if 1
 		/* Depth To Cloudpoint */
@@ -667,7 +699,7 @@ void *consumer_process(void *context)
 			}
 
 
-			printf("dumpfile_mode == %d\n",dumpfile_mode);
+			//printf("dumpfile_mode == %d\n",dumpfile_mode);
 			// Dump File
 			if (dumpfile_mode != 0) {
 				dump_cnt++;
@@ -676,7 +708,7 @@ void *consumer_process(void *context)
 				}
 			}
 
-			printf("dump_file== %d\n",dump_file);
+			//printf("dump_file== %d\n",dump_file);
 
 			if (dump_file && (dumpfile_mode & DUMP_DEPTH_FILE)) {
 				char depth_pic_name[64] ={0};
@@ -689,28 +721,16 @@ void *consumer_process(void *context)
 				save_pointcloud_to_txt(pointcloud_pic_name, pc, STEREO_RES_HEIGHT, STEREO_RES_WIDTH);
 			}
 		}
-		
-	
-		
+		#endif
+
+		#if 1
 		/* Right Camera Data */
 		if (0 == client_get_buffer_size_by_type((uint8_t *)data_item->items, STREAM_NODE_CAM_RIGHT, (void **)&right_buffer, &right_size)) {
 
-		#if 0
-			if (preview_flag && right_buffer != nullptr && right_size > 0) {
-				// 初始化YUV图像（YUV420SP格式：分辨率 height x width，数据大小 = width*height*1.5）
-				g_right_yuv = cv::Mat(height * 3 / 2, width, CV_8UC1, right_buffer).clone();
-				// YUV420SP转BGR（嵌入式常用格式，对应cv::COLOR_YUV2BGR_NV12）
-				cv::Mat right_bgr;
-				cv::cvtColor(g_right_yuv, right_bgr, cv::COLOR_YUV2BGR_NV12);
-				// 显示鼠标坐标（YUV图无需显示像素值，仅显示坐标）
-				std::string right_txt = "Pos: (" + std::to_string(g_mousePos_right.x) + "," + 
-									   std::to_string(g_mousePos_right.y) + ")";
-				cv::putText(right_bgr, right_txt, cv::Point(10, 30), cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(0,255,0), 2);
-				// 显示右图
-				cv::imshow("Right Camera", right_bgr);
-			}
-		#endif
-		
+			if (preview_flag) {
+        		show_single_camera(right_buffer, right_size, selected_mode, "Right Camera");
+    		}
+
 			// Verbose: Right
 			if (verbose_mode & VERBOSE_LR_RAW_NV12) {
 				printf("[%ld] Client Get Right Cam NV12: size[%d].\n", get_current_timestamp_us(), right_size);
@@ -726,19 +746,10 @@ void *consumer_process(void *context)
 
 		/* Left Camera Data */
 		if (0 == client_get_buffer_size_by_type((uint8_t *)data_item->items, STREAM_NODE_CAM_LEFT, (void **)&left_buffer, &left_size)) {
-		#if 0
-			if (preview_flag && left_buffer != nullptr && left_size > 0) {
-				g_left_yuv = cv::Mat(height * 3 / 2, width, CV_8UC1, left_buffer).clone();
-				cv::Mat left_bgr;
-				cv::cvtColor(g_left_yuv, left_bgr, cv::COLOR_YUV2BGR_NV12);
-				std::string left_txt = "Pos: (" + std::to_string(g_mousePos_left.x) + "," + 
-									  std::to_string(g_mousePos_left.y) + ")";
-				cv::putText(left_bgr, left_txt, cv::Point(10, 30), cv::FONT_HERSHEY_SIMPLEX, 0.8, cv::Scalar(0,255,0), 2);
-				cv::imshow("Left Camera", left_bgr);
-			}
-		#endif
 
-
+			// if (preview_flag) {
+        	// 	show_single_camera(left_buffer, left_size, selected_mode, "Left Camera");
+    		// }
 
 			// Verbose: Left
 			if (verbose_mode & VERBOSE_LR_RAW_NV12) {
@@ -775,7 +786,6 @@ consumer_release:
 	running = 0;
     return NULL;
 }
-
 
 static int client_get_parse_stream_info(server_stream_info_t *server_stream_info)
 {
@@ -827,7 +837,6 @@ static int client_get_parse_stream_info(server_stream_info_t *server_stream_info
         if (cJSON_IsNumber(cy))
             intr.cy = cy->valuedouble;
     }
-
 
 	char right_name[]="Right-Cam",left_name[]="Left-Cam";
 	char depth_name[]="Depth",imu_name[]="IMU";
@@ -884,12 +893,39 @@ static int client_get_parse_stream_info(server_stream_info_t *server_stream_info
 	return 0;
 }
 
+static int client_send_mode_to_server(int fd, int mode)
+{
+	if (fd < 0) {
+		fprintf(stderr, "Invalid client fd for sending mode\n");
+		return -1;
+	}
+
+	char mode_json[MODE_JSON_STR_LEN] = {0};
+	snprintf(mode_json, MODE_JSON_STR_LEN, "{\"Mode\": %d}", mode);
+
+	// size_t json_len = strlen(mode_json);
+	// printf("[Client] Prepare to send mode msg (len=%zu): %s\n", json_len, mode_json);
+
+	ssize_t sent_len = send(fd, mode_json, strlen(mode_json), 0);
+	if (sent_len < 0) {
+		fprintf(stderr, "Send mode to server failed: %s\n", strerror(errno));
+		return -1;
+	} else if (sent_len != static_cast<ssize_t>(strlen(mode_json))) {
+		fprintf(stderr, "Send mode incomplete: sent %ld/%zu bytes\n", sent_len, strlen(mode_json));
+		return -1;
+	}
+
+	printf("Successfully sent mode to server: %d (%s)\n", mode, mode == MODE_RAW_DEPTH ? "raw" : "isp");
+	return 0;
+}
+
 static struct option const long_options[] = {
 	{"interface", required_argument, NULL, 'i'},
 	{"server", required_argument, NULL, 's'},
 	{"verbose", required_argument, NULL, 'v'},
 	{"preview", no_argument, NULL, 'p'},
 	{"dump", required_argument, NULL, 'd'},
+	{"mode", required_argument, NULL, 'm'},
 	{NULL, 0, NULL, 0}
 };
 
@@ -900,6 +936,7 @@ static void print_help(void)
 	printf("-i, --interface=\"Network interface\"\n");
 	printf("-s, --server=\"Server ip\"\n");
 	printf("-v, --verbose\tEnable verbose mode\n");
+	printf("-m, --mode\tSet working mode (1: raw, 2: isp, default: 1)\n");
 	printf("-p, --preview\tPreview depth (JET) and RGB frames in real-time\n");
 }
 
@@ -916,7 +953,7 @@ int main(int argc, char** argv)
 		return 0;
 	}
 
-	while ((c = getopt_long(argc, argv, "i:s:d:v:p", long_options, NULL)) != -1) {
+	while ((c = getopt_long(argc, argv, "i:s:d:v:m:p", long_options, NULL)) != -1) {
 		switch (c) {
 		case 'i':
 			strcpy(ifname, optarg);
@@ -931,8 +968,11 @@ int main(int argc, char** argv)
 			dumpfile_mode = atoi(optarg);
 			break;
 		case 'p':
-            		preview_flag = 1;
-            		break;
+            preview_flag = 1;
+            break;
+		case 'm':
+			selected_mode = atoi(optarg);
+			break;
 		default:
 			print_help();
 			return 0;
@@ -950,6 +990,12 @@ int main(int argc, char** argv)
 	if (client_fd < 0) {
 		printf("[Client] init error\n");
 		return 0;
+	}
+
+	if (client_send_mode_to_server(client_fd, selected_mode) != 0) {
+		fprintf(stderr, "Failed to send mode to server\n");
+		close(client_fd);
+		return -1;
 	}
 
 	if (0 != client_get_parse_stream_info(&stream_info)) {
