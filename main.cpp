@@ -31,7 +31,7 @@
 
 // 相机内参结构体
 typedef struct {
-    double fx, fy, cx, cy;
+    double fx, fy, cx, cy, baseline;
 } CameraIntrinsics;
 
 typedef struct {
@@ -66,7 +66,7 @@ static server_stream_info_t stream_info = {0};
 
 static int32_t running = 0;
 
-static CameraIntrinsics intr = {646.104, 418.067, 328.663, 174.894}; 
+static CameraIntrinsics intr = {0, 0, 0, 0, 0}; 
 
 /* Debug Dump File */
 static uint32_t dumpfile_mode = 0;
@@ -142,179 +142,266 @@ void show_single_camera(uint8_t *cam_buffer, uint32_t cam_size, int mode, const 
     cv::waitKey(1);
 }
 
-void show_depth_map(uint16_t *depth_buffer, size_t depth_size, int width, int height) {
+#if defined(__ARM_NEON__) || defined(__ARM_NEON)
+#include <arm_neon.h>
+#define USE_NEON 1
+#else
+#define USE_NEON 0
+#endif
 
-    if (!depth_buffer || depth_size <= 0 || width <= 0 || height <= 0) {
-        std::cerr << "Invalid depth buffer or size/width/height!" << std::endl;
-        return;
-    }
+static bool compute_depth_percentiles(const cv::Mat &depth, double &p10, double &p50, double &p90)
+{
+    const int rows = depth.rows;
+    const int cols = depth.cols;
 
-    size_t expected_size = width * height * sizeof(uint16_t);
-    if (depth_size != expected_size) {
-        std::cerr << "Depth size mismatch! Expected " << expected_size << " bytes, got " << depth_size << std::endl;
-        return;
-    }
-
-    // 转换为OpenCV Mat（16位单通道，单位：毫米）
-    cv::Mat depth_raw(height, width, CV_16UC1, depth_buffer);
-
-    cv::Mat raw_depth_3ch;
-    {
-
-        cv::Mat valid_depth;
-        depth_raw.copyTo(valid_depth, depth_raw > 0);
-        
-        if (valid_depth.empty()) {
-
-            raw_depth_3ch = cv::Mat::zeros(height, width, CV_8UC3);
-        } else {
-
-            double min_depth, max_depth;
-            cv::minMaxLoc(valid_depth, &min_depth, &max_depth);
-            cv::Mat depth_normalized;
-            valid_depth.convertTo(depth_normalized, CV_8UC1, 
-                                255.0 / (max_depth - min_depth), 
-                                -min_depth * 255.0 / (max_depth - min_depth));
-            depth_normalized.setTo(0, depth_raw == 0);
-            cv::cvtColor(depth_normalized, raw_depth_3ch, cv::COLOR_GRAY2BGR);
-        }
-    }
-
-    cv::Mat visual_depth;
-    {
-
-        cv::Mat depth_m;
-        depth_raw.convertTo(depth_m, CV_32F, 1.0 / 1000.0); // 毫米→米
-        cv::Mat inv_depth = 1.0f / (depth_m + 1e-6f); // 反转深度
-        inv_depth.setTo(0, depth_raw == 0); // 无效区域置0
-
-        std::vector<float> depth_vals;
-        depth_vals.reserve(height * width);
-        float min_val = std::numeric_limits<float>::max();
-        float max_val = std::numeric_limits<float>::lowest();
+    int num_threads = omp_get_max_threads();
+    std::vector<std::vector<uint16_t>> locals(num_threads);
 
 #pragma omp parallel
-        {
-            std::vector<float> local_vals;
-            local_vals.reserve(height * width / 4);
-            float local_min = std::numeric_limits<float>::max();
-            float local_max = std::numeric_limits<float>::lowest();
-#pragma omp for nowait
-            for (int r = 0; r < height; ++r) {
-                const float *row_ptr = inv_depth.ptr<float>(r);
-                for (int c = 0; c < width; ++c) {
-                    float v = row_ptr[c];
-                    if (v > 0) {
-                        local_vals.push_back(v);
-                        if (v < local_min) local_min = v;
-                        if (v > local_max) local_max = v;
-                    }
-                }
+    {
+        int tid = omp_get_thread_num();
+        auto &buf = locals[tid];
+        buf.reserve(depth.total() / num_threads);
+
+#pragma omp for schedule(static)
+        for (int y = 0; y < rows; ++y) {
+            const uint16_t *ptr = depth.ptr<uint16_t>(y);
+            for (int x = 0; x < cols; ++x) {
+                if (ptr[x] > 0)
+                    buf.push_back(ptr[x]);
             }
-#pragma omp critical
-            {
-                depth_vals.insert(depth_vals.end(), local_vals.begin(), local_vals.end());
-                if (local_min < min_val) min_val = local_min;
-                if (local_max > max_val) max_val = local_max;
-            }
-        }
-
-        auto getQuantile = [&](double q) {
-            if (depth_vals.empty()) return 0.0f;
-            size_t idx = static_cast<size_t>(q * (depth_vals.size() - 1));
-            std::nth_element(depth_vals.begin(), depth_vals.begin() + idx, depth_vals.end());
-            return depth_vals[idx];
-        };
-        float q10 = getQuantile(0.10);
-        float q50 = getQuantile(0.50);
-        float q90 = getQuantile(0.90);
-
-        double scale10 = 0.25 * 255.0 / (q10 - min_val + 1e-6);
-        double scale50 = 0.25 * 255.0 / (q50 - q10 + 1e-6);
-        double scale90 = 0.25 * 255.0 / (q90 - q50 + 1e-6);
-        double scaleMax = 0.25 * 255.0 / (max_val - q90 + 1e-6);
-
-        visual_depth.create(height, width, CV_8UC3);
-#pragma omp parallel for
-        for (int r = 0; r < height; ++r) {
-            const float *row_ptr = inv_depth.ptr<float>(r);
-            cv::Vec3b *out_ptr = visual_depth.ptr<cv::Vec3b>(r);
-
-            for (int c = 0; c < width; ++c) {
-                float pixel = row_ptr[c];
-                uint8_t val = 0;
-                if (pixel > 0) {
-                    if (pixel <= q10)
-                        val = static_cast<uint8_t>((pixel - min_val) * scale10);
-                    else if (pixel <= q50)
-                        val = static_cast<uint8_t>(0.25 * 255 + (pixel - q10) * scale50);
-                    else if (pixel <= q90)
-                        val = static_cast<uint8_t>(0.5 * 255 + (pixel - q50) * scale90);
-                    else
-                        val = static_cast<uint8_t>(0.75 * 255 + (pixel - q90) * scaleMax);
-                }
-                out_ptr[c] = cv::Vec3b(val, val, val);
-            }
-        }
-
-        static cv::Mat lut;
-        if (lut.empty()) {
-            cv::Mat tmp(1, 256, CV_8UC1);
-            for (int i = 0; i < 256; i++) tmp.at<uchar>(i) = i;
-            cv::applyColorMap(tmp, lut, cv::COLORMAP_JET);
-        }
-        cv::LUT(visual_depth, lut, visual_depth);
-
-        cv::Mat mask = (depth_raw == 0);
-        visual_depth.setTo(cv::Vec3b(0, 0, 0), mask);
-    }
-
-    const int set_num = 6;
-    double font_scale = std::min(width, height) / 700.0;
-    int x_step = width / set_num;
-    int y_step = height / set_num;
-
-
-    for (int i = 1; i < set_num; ++i) {
-        cv::line(raw_depth_3ch, cv::Point(i * x_step, 0), cv::Point(i * x_step, height), 
-                 cv::Scalar(255, 255, 255), 1);
-        cv::line(raw_depth_3ch, cv::Point(0, i * y_step), cv::Point(width, i * y_step), 
-                 cv::Scalar(255, 255, 255), 1);
-        cv::line(visual_depth, cv::Point(i * x_step, 0), cv::Point(i * x_step, height), 
-                 cv::Scalar(255, 255, 255), 1);
-        cv::line(visual_depth, cv::Point(0, i * y_step), cv::Point(width, i * y_step), 
-                 cv::Scalar(255, 255, 255), 1);
-    }
-
-    for (int i = 1; i < set_num; ++i) {
-        for (int j = 1; j < set_num; ++j) {
-            int x = i * x_step;
-            int y = j * y_step;
-            float depth_val = depth_raw.at<uint16_t>(y, x) * 0.001f; // 毫米→米
-            if (depth_val <= 0) continue;
-
-            std::stringstream depth_text;
-            depth_text << std::fixed << std::setprecision(2) << depth_val << "m";
-
-            cv::putText(raw_depth_3ch, depth_text.str(), cv::Point(x + 5, y - 5), 
-                        cv::FONT_HERSHEY_SIMPLEX, font_scale, cv::Scalar(255, 255, 255), 2);
-            cv::putText(visual_depth, depth_text.str(), cv::Point(x + 5, y - 5), 
-                        cv::FONT_HERSHEY_SIMPLEX, font_scale, cv::Scalar(255, 255, 255), 2);
         }
     }
 
-    cv::Mat combined_img;
-    cv::hconcat(raw_depth_3ch, visual_depth, combined_img); // 左：原始深度，右：可视化深度
+    size_t total = 0;
+    for (auto &v : locals) total += v.size();
+    if (total == 0) {
+        p10 = p50 = p90 = -1.0;
+        return false;
+    }
 
-    cv::putText(combined_img, "Raw Depth (Normalized)", cv::Point(20, 30), 
-                cv::FONT_HERSHEY_SIMPLEX, font_scale, cv::Scalar(0, 255, 0), 2);
-    cv::putText(combined_img, "Visual Depth (Outdoor)", cv::Point(width + 20, 30), 
-                cv::FONT_HERSHEY_SIMPLEX, font_scale, cv::Scalar(0, 255, 0), 2);
+    std::vector<uint16_t> valid;
+    valid.reserve(total);
+    for (auto &v : locals)
+        valid.insert(valid.end(), v.begin(), v.end());
 
-    cv::namedWindow("Depth Map (Raw + Visual)", cv::WINDOW_NORMAL);
-    cv::resizeWindow("Depth Map (Raw + Visual)", width * 2, height); 
-    cv::imshow("Depth Map (Raw + Visual)", combined_img);
-    cv::waitKey(1); 
+    size_t k10 = static_cast<size_t>(0.10 * valid.size());
+    size_t k50 = static_cast<size_t>(0.50 * valid.size());
+    size_t k90 = static_cast<size_t>(0.90 * valid.size());
+
+    std::nth_element(valid.begin(), valid.begin() + k10, valid.end());
+    p10 = valid[k10];
+
+    std::nth_element(valid.begin(), valid.begin() + k50, valid.end());
+    p50 = valid[k50];
+
+    std::nth_element(valid.begin(), valid.begin() + k90, valid.end());
+    p90 = valid[k90];
+
+    return true;
+}
+
+void show_depth_map(uint16_t *depth_buffer,
+                    size_t depth_size,
+                    int width,
+                    int height)
+{
+    if (!depth_buffer || depth_size == 0 || width <= 0 || height <= 0) {
+        std::cerr << "Invalid depth buffer!" << std::endl;
+        return;
+    }
+
+
+    size_t expected = static_cast<size_t>(width) * height * sizeof(uint16_t);
+    if (depth_size != expected) {
+        std::cerr << "Depth size mismatch! Expected: " << expected << ", Got: " << depth_size << std::endl;
+        return;
+    }
+
+    cv::Mat depth_raw(height, width, CV_16UC1, depth_buffer);
+
+    double p10, p50, p90;
+    if (!compute_depth_percentiles(depth_raw, p10, p50, p90)) {
+        std::cerr << "No valid depth data found!" << std::endl;
+        return;
+    }
+    if (p10 <= 0 || p50 <= 0 || p90 <= 0) {
+        std::cerr << "Invalid percentile values!" << std::endl;
+        return;
+    }
+
+
+    double min_valid = 0.0;
+    double max_valid = 0.0;
+
+    std::vector<uint16_t> all_valid;
+    for (int y = 0; y < height; ++y) {
+        const uint16_t *dptr = depth_raw.ptr<uint16_t>(y);
+        for (int x = 0; x < width; ++x) {
+            if (dptr[x] > 0) {
+                all_valid.push_back(dptr[x]);
+            }
+        }
+    }
+    if (!all_valid.empty()) {
+        min_valid = *std::min_element(all_valid.begin(), all_valid.end());
+        max_valid = *std::max_element(all_valid.begin(), all_valid.end());
+    } else {
+        std::cerr << "No valid depth data for min/max calculation!" << std::endl;
+        return;
+    }
+
+    const double seg1_start = 0.0;
+    const double seg1_end = 0.25;
+    const double seg2_start = 0.25;
+    const double seg2_end = 0.5;
+    const double seg3_start = 0.5;
+    const double seg3_end = 0.75;
+    const double seg4_start = 0.75;
+    const double seg4_end = 1.0;
+
+    const float gray_scale = 255.0f;
+
+    cv::Mat gray(height, width, CV_8UC1);
+
+
+#pragma omp parallel for schedule(static)
+    for (int y = 0; y < height; ++y) {
+        const uint16_t *dptr = depth_raw.ptr<uint16_t>(y);
+        uchar *optr = gray.ptr<uchar>(y);
+
+#if USE_NEON
+
+        int x = 0;
+        float32x4_t v_min_valid = vdupq_n_f32((float)min_valid);
+        float32x4_t v_p10 = vdupq_n_f32((float)p10);
+        float32x4_t v_p50 = vdupq_n_f32((float)p50);
+        float32x4_t v_p90 = vdupq_n_f32((float)p90);
+        float32x4_t v_max_valid = vdupq_n_f32((float)max_valid);
+
+        float32x4_t v_seg1_start = vdupq_n_f32((float)seg1_start);
+        float32x4_t v_seg1_span = vdupq_n_f32((float)(seg1_end - seg1_start));
+        float32x4_t v_seg2_start = vdupq_n_f32((float)seg2_start);
+        float32x4_t v_seg2_span = vdupq_n_f32((float)(seg2_end - seg2_start));
+        float32x4_t v_seg3_start = vdupq_n_f32((float)seg3_start);
+        float32x4_t v_seg3_span = vdupq_n_f32((float)(seg3_end - seg3_start));
+        float32x4_t v_seg4_start = vdupq_n_f32((float)seg4_start);
+        float32x4_t v_seg4_span = vdupq_n_f32((float)(seg4_end - seg4_start));
+
+        float32x4_t v_gray_scale = vdupq_n_f32(gray_scale);
+        float32x4_t v_zero = vdupq_n_f32(0.0f);
+        float32x4_t v_255 = vdupq_n_f32(255.0f);
+
+
+        for (; x <= width - 4; x += 4) {
+
+            uint16x4_t u16 = vld1_u16(dptr + x);
+            uint32x4_t u32 = vmovl_u16(u16);
+            float32x4_t v_z = vcvtq_f32_u32(u32);
+
+
+            float32x4_t v_norm = vdupq_n_f32(0.0f);
+
+            uint32x4_t mask1 = vcagtq_f32(v_p10, v_z);
+            float32x4_t norm1 = vsubq_f32(v_z, v_min_valid);
+            norm1 = vmulq_f32(norm1, vdivq_f32(v_seg1_span, vsubq_f32(v_p10, v_min_valid)));
+            norm1 = vaddq_f32(norm1, v_seg1_start);
+            v_norm = vbslq_f32(mask1, norm1, v_norm);
+
+            uint32x4_t mask2_1 = vcagtq_f32(v_z, v_p10);
+            uint32x4_t mask2_2 = vcagtq_f32(v_p50, v_z);
+            uint32x4_t mask2 = vandq_u32(mask2_1, mask2_2);
+            float32x4_t norm2 = vsubq_f32(v_z, v_p10);
+            norm2 = vmulq_f32(norm2, vdivq_f32(v_seg2_span, vsubq_f32(v_p50, v_p10)));
+            norm2 = vaddq_f32(norm2, v_seg2_start);
+            v_norm = vbslq_f32(mask2, norm2, v_norm);
+
+            uint32x4_t mask3_1 = vcagtq_f32(v_z, v_p50);
+            uint32x4_t mask3_2 = vcagtq_f32(v_p90, v_z);
+            uint32x4_t mask3 = vandq_u32(mask3_1, mask3_2);
+            float32x4_t norm3 = vsubq_f32(v_z, v_p50);
+            norm3 = vmulq_f32(norm3, vdivq_f32(v_seg3_span, vsubq_f32(v_p90, v_p50)));
+            norm3 = vaddq_f32(norm3, v_seg3_start);
+            v_norm = vbslq_f32(mask3, norm3, v_norm);
+
+            uint32x4_t mask4 = vcagtq_f32(v_z, v_p90);
+            float32x4_t norm4 = vsubq_f32(v_z, v_p90);
+            norm4 = vmulq_f32(norm4, vdivq_f32(v_seg4_span, vsubq_f32(v_max_valid, v_p90)));
+            norm4 = vaddq_f32(norm4, v_seg4_start);
+            v_norm = vbslq_f32(mask4, norm4, v_norm);
+
+            v_norm = vmulq_f32(v_norm, v_gray_scale);
+            v_norm = vmaxq_f32(v_norm, v_zero);
+            v_norm = vminq_f32(v_norm, v_255);
+
+            uint32x4_t ui = vcvtq_u32_f32(v_norm);
+            uint16x4_t u16n = vmovn_u32(ui);
+            uint8x8_t u8 = vqmovn_u16(vcombine_u16(u16n, vdup_n_u16(0)));
+            vst1_u8(optr + x, u8);
+        }
+
+        for (; x < width; ++x) {
+            uint16_t z = dptr[x];
+            float norm_val = 0.0f;
+
+            if (z == 0) {
+                optr[x] = 0;
+                continue;
+            }
+
+            if (z <= p10) {
+                norm_val = (z - min_valid) / (p10 - min_valid) * (seg1_end - seg1_start) + seg1_start;
+            }
+            else if (z > p10 && z <= p50) {
+                norm_val = (z - p10) / (p50 - p10) * (seg2_end - seg2_start) + seg2_start;
+            }
+            else if (z > p50 && z <= p90) {
+                norm_val = (z - p50) / (p90 - p50) * (seg3_end - seg3_start) + seg3_start;
+            }
+            else {
+                norm_val = (z - p90) / (max_valid - p90) * (seg4_end - seg4_start) + seg4_start;
+            }
+
+            int gray_val = static_cast<int>(norm_val * gray_scale);
+            gray_val = std::max(0, std::min(255, gray_val));
+            optr[x] = static_cast<uchar>(gray_val);
+        }
+#else
+        for (int x = 0; x < width; ++x) {
+            uint16_t z = dptr[x];
+            float norm_val = 0.0f;
+
+            if (z == 0) {
+                optr[x] = 0;
+                continue;
+            }
+            if (z <= p10) {
+                norm_val = (z - min_valid) / (p10 - min_valid) * (seg1_end - seg1_start) + seg1_start;
+            }
+            else if (z > p10 && z <= p50) {
+                norm_val = (z - p10) / (p50 - p10) * (seg2_end - seg2_start) + seg2_start;
+            }
+            else if (z > p50 && z <= p90) {
+                norm_val = (z - p50) / (p90 - p50) * (seg3_end - seg3_start) + seg3_start;
+            }
+            else {
+                norm_val = (z - p90) / (max_valid - p90) * (seg4_end - seg4_start) + seg4_start;
+            }
+            int gray_val = static_cast<int>(norm_val * gray_scale);
+            gray_val = std::max(0, std::min(255, gray_val));
+            optr[x] = static_cast<uchar>(gray_val);
+        }
+#endif
+    }
+
+    cv::Mat color;
+    cv::applyColorMap(gray, color, cv::COLORMAP_JET);
+
+    cv::Mat mask = (depth_raw == 0);
+    color.setTo(cv::Vec3b(0, 0, 0), mask);
+
+    cv::imshow("Depth Color (Aligned Python)", color);
+    cv::waitKey(1);
 }
 
 #if 0
@@ -668,10 +755,7 @@ void *consumer_process(void *context)
 			goto consumer_release;
 		}
 		
-		
-		static cv::Mat preview_buffer(STEREO_RES_HEIGHT * 2, STEREO_RES_WIDTH, CV_8UC3);
-		static cv::Mat depth_gray_8u_prev;
-		#if 0
+		#if 1
 		/* Depth To Preview */
 		if (0 == client_get_buffer_size_by_type((uint8_t *)data_item->items, STREAM_NODE_DEPTH, (void **)&depth_buffer, &depth_size)) {
 		
@@ -679,7 +763,7 @@ void *consumer_process(void *context)
 
 			   show_depth_map((uint16_t *)depth_buffer, depth_size, STEREO_RES_WIDTH, STEREO_RES_HEIGHT);
 
-			}
+			}    
 		}
 		
 		#endif
@@ -727,9 +811,9 @@ void *consumer_process(void *context)
 		/* Right Camera Data */
 		if (0 == client_get_buffer_size_by_type((uint8_t *)data_item->items, STREAM_NODE_CAM_RIGHT, (void **)&right_buffer, &right_size)) {
 
-			if (preview_flag) {
-        		show_single_camera(right_buffer, right_size, selected_mode, "Right Camera");
-    		}
+			// if (preview_flag) {
+        	// 	show_single_camera(right_buffer, right_size, selected_mode, "Right Camera");
+    		// }
 
 			// Verbose: Right
 			if (verbose_mode & VERBOSE_LR_RAW_NV12) {
@@ -836,6 +920,9 @@ static int client_get_parse_stream_info(server_stream_info_t *server_stream_info
 		cJSON *cy = cJSON_GetObjectItemCaseSensitive(stream_info, "cy");
         if (cJSON_IsNumber(cy))
             intr.cy = cy->valuedouble;
+		cJSON *baseline = cJSON_GetObjectItemCaseSensitive(stream_info, "baseline");
+        if (cJSON_IsNumber(baseline))
+            intr.baseline = baseline->valuedouble;
     }
 
 	char right_name[]="Right-Cam",left_name[]="Left-Cam";
@@ -878,6 +965,7 @@ static int client_get_parse_stream_info(server_stream_info_t *server_stream_info
 	printf("fy: %f\n", intr.fy);
 	printf("cx: %f\n", intr.cx);
 	printf("cy: %f\n", intr.cy);
+	printf("baseline: %f\n", intr.baseline);
 	for (index = 0; index < STREAM_NODE_TYPE_NUM; index++) {
 		node_info = (stream_node_info_t *)&server_stream_info->stream_nodes[index];
 		printf("+++++++++++++++++++++++++++++++++\n");
