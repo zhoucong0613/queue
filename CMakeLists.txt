@@ -81,6 +81,8 @@ set(SRC_FILES
     ${PROJECT_SOURCE_DIR}/src/mqueue.cpp
     ${PROJECT_SOURCE_DIR}/src/performance_test_util.cpp
     ${PROJECT_SOURCE_DIR}/src/synchronous_queue.cpp
+    ${PROJECT_SOURCE_DIR}/src/synchronous_queue.cpp
+    ${PROJECT_SOURCE_DIR}/src/eeprom_calib.cpp
 )
 
 add_executable(${PROJECT_NAME} ${SRC_FILES})
