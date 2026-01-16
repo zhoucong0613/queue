@@ -83,6 +83,7 @@ set(SRC_FILES
     ${PROJECT_SOURCE_DIR}/src/synchronous_queue.cpp
     ${PROJECT_SOURCE_DIR}/src/synchronous_queue.cpp
     ${PROJECT_SOURCE_DIR}/src/eeprom_calib.cpp
+    ${PROJECT_SOURCE_DIR}/src/render_depth.cpp
 )
 
 add_executable(${PROJECT_NAME} ${SRC_FILES})
