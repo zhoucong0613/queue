@@ -1,6 +1,8 @@
 #ifndef _COMMON_H_
 #define _COMMON_H_
 
+#include <stdint.h>
+
 #define SERVER_PORT 		8100
 
 #define STEREO_RES_WIDTH	640
