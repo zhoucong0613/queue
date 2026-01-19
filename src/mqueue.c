@@ -20,7 +20,7 @@
 *******************************************************************************/
 teQueueStatus mQueueCreate(tsQueue *psQueue, uint32_t u32Length)
 {
-	psQueue->apvBuffer = static_cast<void**>(malloc(sizeof(void*) * u32Length));
+	psQueue->apvBuffer = malloc(sizeof(void *) * u32Length);
 	if (!psQueue->apvBuffer){
 		return E_QUEUE_ERROR_NO_MEM;
 	}

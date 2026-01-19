@@ -1,4 +1,3 @@
-#include "render_depth.h"
 #include <iostream>
 #include <sstream>
 #include <iomanip>
@@ -6,6 +5,9 @@
 #include <algorithm>
 #include <limits>
 #include <omp.h>
+#include <opencv2/opencv.hpp>
+
+#include "render_depth.h"
 
 void show_single_camera(uint8_t *cam_buffer, uint32_t cam_size, int mode, const char *win_name)
 {

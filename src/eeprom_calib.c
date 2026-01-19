@@ -8,7 +8,7 @@
 #include <ctype.h>
 #include <linux/i2c.h>
 #include <linux/i2c-dev.h>
-#include <cstdint>
+#include <stdint.h>
 
 #include "eeprom_calib.h"
 

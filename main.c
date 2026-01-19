@@ -16,10 +16,8 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
-#include <iostream>
-#include <vector>
 #include <omp.h>
-#include <iomanip>
+
 
 #include "common.h"
 #include "performance_test_util.h"
@@ -194,7 +192,7 @@ static void client_parse_imu_buffer(void *imu_buffer, uint32_t imu_size)
 {
 	uint32_t i;
 	uint32_t imu_data_num = imu_size / sizeof(imu_subnode_data_t);
-	imu_subnode_data_t *imu_subnode_data = static_cast<imu_subnode_data_t*>(imu_buffer);
+	imu_subnode_data_t *imu_subnode_data = imu_buffer;
 
 	for (i = 0; i < imu_data_num; i++) {
 		if (verbose_mode & VERBOSE_IMU) {
@@ -349,7 +347,7 @@ void *consumer_process(void *context)
 		/* Depth To Preview */
 		if (0 == client_get_buffer_size_by_type((uint8_t *)data_item->items, STREAM_NODE_DEPTH, (void **)&depth_buffer, &depth_size)) {
 		
-			if (preview_flag && depth_buffer != nullptr && depth_size > 0) {
+			if (preview_flag && depth_buffer != NULL && depth_size > 0) {
 
 			   show_depth_map((uint16_t *)depth_buffer, depth_size, STEREO_RES_WIDTH, STEREO_RES_HEIGHT);
 
@@ -463,7 +461,7 @@ consumer_release:
 
 static int client_get_parse_stream_info(server_stream_info_t *server_stream_info)
 {
-	char *info_json_str = static_cast<char*>(malloc(STREAM_INFO_JSON_STR_LEN));
+	char *info_json_str = malloc(STREAM_INFO_JSON_STR_LEN);
 	if (!info_json_str) {
 		printf("[Client] malloc for JSON info Failed\n");
 		return -1;
@@ -515,22 +513,20 @@ static int client_get_parse_stream_info(server_stream_info_t *server_stream_info
             intr.baseline = baseline->valuedouble;
     }
 
-	char right_name[]="Right-Cam",left_name[]="Left-Cam";
-	char depth_name[]="Depth",imu_name[]="IMU";
 	for (index = 0; index < STREAM_NODE_TYPE_NUM; index++) {
 		node_info = (stream_node_info_t *)&server_stream_info->stream_nodes[index];
 		switch (index) {
 			case STREAM_NODE_CAM_RIGHT:
-				node_info->name = right_name;
+				node_info->name = "Right-Cam";
 				break;
 			case STREAM_NODE_CAM_LEFT:
-				node_info->name = left_name;
+				node_info->name = "Left-Cam";
 				break;
 			case STREAM_NODE_DEPTH:
-				node_info->name = depth_name;
+				node_info->name = "Depth";
 				break;
 			case STREAM_NODE_IMU:
-				node_info->name = imu_name;
+				node_info->name = "IMU";
 				break;
 		}
 		node_json_info = cJSON_GetObjectItemCaseSensitive(root, node_info->name);
@@ -588,7 +584,7 @@ static int client_send_mode_to_server(int fd, int mode)
 	if (sent_len < 0) {
 		fprintf(stderr, "Send mode to server failed: %s\n", strerror(errno));
 		return -1;
-	} else if (sent_len != static_cast<ssize_t>(strlen(mode_json))) {
+	} else if (sent_len != strlen(mode_json)) {
 		fprintf(stderr, "Send mode incomplete: sent %ld/%zu bytes\n", sent_len, strlen(mode_json));
 		return -1;
 	}
@@ -749,16 +745,15 @@ int main(int argc, char** argv)
 		return 0;
 	}
 
-	char prod_name[]="recv_data",cons_name[]="consumer";
 	sync_queue_info_t sync_queue_info_recv_consumer = {
-		.productor_name = prod_name,
-		.consumer_name = cons_name,
+		.productor_name = "recv_data",
+		.consumer_name = "consumer",
 
 		.is_need_malloc_in_advance = 0,
 		.is_external_buffer = 0,
 
 		.queue_len = 3,
-		.data_item_size = static_cast<int>(stream_info.total_size),
+		.data_item_size = stream_info.total_size,
 		.data_item_count = 1,
 
 		.item_data_init_param = NULL,
@@ -775,8 +770,8 @@ int main(int argc, char** argv)
 	}
 
 	running = 1;
-	pthread_create(&client_data_thread, NULL, client_recv_data, NULL);
-	pthread_create(&consumer_thread, NULL, consumer_process, NULL);
+	pthread_create(&client_data_thread, NULL, (void *)client_recv_data, NULL);
+	pthread_create(&consumer_thread, NULL, (void *)consumer_process, NULL);
 
 	if (client_data_thread > 0) {
 		pthread_join(client_data_thread, NULL);

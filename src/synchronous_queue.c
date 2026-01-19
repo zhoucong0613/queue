@@ -50,7 +50,7 @@ int sync_queue_create(sync_queue_t *sync_queue, sync_queue_info_t *sync_queue_in
 		printf("mqueue create failed %d.", status);
 		return -1;
 	}
-	for (size_t j = 0; j < (size_t)sync_queue_info->queue_len; j++){
+	for (size_t j = 0; j < sync_queue_info->queue_len; j++){
 		void *items = (void *)malloc(sync_queue_info->data_item_size * sync_queue_info->data_item_count);
 		if (items == NULL){
 			printf("malloc failed: queue item.\n");
@@ -109,7 +109,7 @@ int sync_queue_get_unused_object(sync_queue_t* sync_queue, uint32_t timeout_ms, 
 	QUEUE_LOG("[Queue get unuse]: [%s -> %s]\n", sync_queue->sync_queue_info.productor_name,
 				sync_queue->sync_queue_info.consumer_name );
 
-	while((uint32_t)(timeout_duration_ms * run_count) < timeout_ms){
+	while(timeout_duration_ms * run_count < timeout_ms){
 		run_count++;
 
 		teQueueStatus status = E_QUEUE_OK;
@@ -133,7 +133,7 @@ int inused_queueu_enqueue_process_func(void *data, void *handle){
 	data_item->inused_update_time_ms = get_timestamp_ms();
 	sync_queue->inused_queue_count++;
 
-	for (size_t i = 0; i < (size_t)sync_queue->user_count; i++){
+	for (size_t i = 0; i < sync_queue->user_count; i++){
 		data_item->user_recoder[i] = 1;
 	}
 	return 1;
@@ -261,7 +261,7 @@ int sync_queue_obtain_inused_object_width_user(sync_queue_t* sync_queue, uint32_
 	QUEUE_LOG("[Queue obtain inused]: [%s -> %s] user[%d]\n", sync_queue->sync_queue_info.productor_name,
 				sync_queue->sync_queue_info.consumer_name, user_flag);
 
-	while((uint32_t)(timeout_duration_ms * run_count) < timeout_ms){
+	while(timeout_duration_ms * run_count < timeout_ms){
 		run_count++;
 
 		teQueueStatus status = E_QUEUE_OK;
@@ -297,7 +297,7 @@ int sync_queue_obtain_inused_object(sync_queue_t* sync_queue, uint32_t timeout_m
 				sync_queue->sync_queue_info.consumer_name);
 
 
-	while((uint32_t)(timeout_duration_ms * run_count) < timeout_ms){
+	while(timeout_duration_ms * run_count < timeout_ms){
 		run_count++;
 		teQueueStatus status = E_QUEUE_OK;
 		status = mQueueDequeueTimedWidthFunc(&sync_queue->inused_queue, timeout_duration_ms, (void **)data_item,

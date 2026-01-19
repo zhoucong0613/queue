@@ -26,16 +26,16 @@ void performance_test_stop_simple(struct PerformanceTestParamSimple *param)
 
 	uint64_t diff = current_time_us - param->start_time_us;
 
-	if(diff > (uint64_t)param->max_diff){
+	if(diff > param->max_diff){
 		param->max_diff = diff;
 	}
 
-	if(diff < (uint64_t)param->min_diff){
+	if(diff < param->min_diff){
 		param->min_diff = diff;
 	}
 
 	param->run_count++;
-	if(param->run_count >= (uint64_t)param->iteration_number){
+	if(param->run_count >= param->iteration_number){
 		param->test_end_time_us = current_time_us;
 		uint64_t diff_time_sum_us = param->test_end_time_us - param->test_start_time_us;
 		float fps = 1000000.0 * param->iteration_number / diff_time_sum_us;
@@ -62,17 +62,17 @@ void performance_test_stop(struct PerformanceTestParam *param)
 	uint64_t current_us = get_timestamp_us();
 	uint64_t diff = current_us - param->test_start_time_us;
 
-	if(diff > (uint64_t)param->max_diff){
+	if(diff > param->max_diff){
 		param->max_diff = diff;
 	}
 
-	if(diff < (uint64_t)param->min_diff){
+	if(diff < param->min_diff){
 		param->min_diff = diff;
 	}
 	param->consumu_time_sum_us += diff;
 	param->run_count++;
 
-	if(param->run_count >= (uint64_t)param->iteration_number){
+	if(param->run_count >= param->iteration_number){
 
 		uint64_t diff_time_sum_us = param->consumu_time_sum_us;
 		float fps = 1000000.0 * param->iteration_number / diff_time_sum_us;
