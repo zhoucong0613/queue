@@ -12,7 +12,6 @@
 
 #include "eeprom_calib.h"
 
-
 static uint8_t calc_checksum(const void* data, uint32_t len) {
     if (!data || len == 0) return 0;
     uint32_t sum = 0;

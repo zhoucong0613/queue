@@ -11,6 +11,5 @@ typedef struct {
     float gx, gy, gz;     // 陀螺仪数据
 } imu_subnode_data_t;
 
-
 #endif
 

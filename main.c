@@ -18,7 +18,6 @@
 #include <netinet/in.h>
 #include <omp.h>
 
-
 #include "common.h"
 #include "performance_test_util.h"
 #include "synchronous_queue.h"

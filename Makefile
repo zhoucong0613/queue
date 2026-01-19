@@ -1,43 +1,32 @@
-# ==============================================================================
-# C/C++混合编译Makefile（支持纯C调用C++ OpenCV）
-# 项目：stereo_client
-# 功能：纯C（main.c）调用C++ OpenCV接口，兼容混合编译
-# 修正点：1. 修复scripts目标shell循环语法 2. 规范变量引用 3. 补充续行符避免分号错误
-# ==============================================================================
-
-# -------------------------- 基础配置（区分C/C++文件） --------------------------
 PROJECT_NAME   := stereo_client
 SRC_DIR        := ./src
 INCLUDE_DIR    := ./include
-# 1. 纯C文件（.c）：main.c + src下所有.c文件（自动排除.cpp文件，无需额外处理）
-C_SRCS         := main.c $(wildcard $(SRC_DIR)/*.c)
-# 2. C++文件（.cpp，依赖OpenCV）：src下所有.cpp文件（如render_depth.cpp）
-CPP_SRCS       := $(wildcard $(SRC_DIR)/*.cpp)
-SCRIPT_FILES   := test.sh delete.sh
 
-# 目标文件配置（核心：避免重复收集，直接转换，无重叠）
-# C文件对应.o文件（仅转换一次，无重复）
-C_OBJS         := $(patsubst %.c, %.o, $(C_SRCS))
-# C++文件对应.o文件（仅转换一次，无重复）
-CPP_OBJS       := $(patsubst %.cpp, %.o, $(CPP_SRCS))
-# 所有目标文件（C+CPP，唯一无重复）
-ALL_OBJS       := $(C_OBJS) $(CPP_OBJS)
+LIB_NAME       := libstereo.so
+LIB_DIR        := ./lib
+LIB_FILE       := $(LIB_DIR)/$(LIB_NAME)
 
-# 编译工具配置（区分C/C++编译器，链接用g++）
-CC             := gcc            # 纯C编译器
-CXX            := g++            # C++编译器（编译OpenCV相关代码）
-RM             := rm -f          # 删除命令
-CHMOD          := chmod +x       # 脚本授权命令
+SRC_C_FILES    := $(wildcard $(SRC_DIR)/*.c)
+SRC_CPP_FILES  := $(wildcard $(SRC_DIR)/*.cpp)
+MAIN_SRC       := main.c
+MAIN_OBJ       := main.o
 
-# -------------------------- 架构检测 & 编译选项配置 --------------------------
+SRC_C_OBJS     := $(patsubst %.c, %.o, $(SRC_C_FILES))
+SRC_CPP_OBJS   := $(patsubst %.cpp, %.o, $(SRC_CPP_FILES))
+SRC_ALL_OBJS   := $(SRC_C_OBJS) $(SRC_CPP_OBJS)
+
+CC             := gcc
+CXX            := g++
+RM             := rm -f
+MKDIR          := mkdir -p
+
 ARCH           := $(shell uname -m)
-COMMON_CFLAGS  := -Wall -O2 -fPIC -std=c99  # C编译标准（C99）
-COMMON_CXXFLAGS:= -Wall -O2 -fPIC -std=c++11 # C++编译标准（支持OpenCV）
+COMMON_CFLAGS  := -Wall -O2 -fPIC -std=c99
+COMMON_CXXFLAGS:= -Wall -O2 -fPIC -std=c++11
 DEFINES        :=
 ARCH_CFLAGS    :=
 ARCH_CXXFLAGS  :=
 
-# 架构分支判断（C/C++分别配置架构选项，补充-GNU_SOURCE宏）
 ifneq (, $(findstring arm, $(ARCH))$(findstring aarch64, $(ARCH)))
     DEFINES      += -DUSE_NEON=1 -D__ARM_NEON__ -D_GNU_SOURCE
     ifeq (, $(findstring aarch64, $(ARCH)))
@@ -50,7 +39,7 @@ ifneq (, $(findstring arm, $(ARCH))$(findstring aarch64, $(ARCH)))
         $(info STATUS: Architecture: ARM64 ($(ARCH)) - NEON enabled by default)
     endif
 else ifneq (, $(findstring x86_64, $(ARCH))$(findstring i386, $(ARCH))$(findstring i686, $(ARCH)))
-    DEFINES      += -DUSE_NEON=0 -D_GNU_SOURCE  # 核心补充：-D_GNU_SOURCE，解决网络编程定义问题
+    DEFINES      += -DUSE_NEON=0 -D_GNU_SOURCE
     ARCH_CFLAGS  += -march=native -mtune=native
     ARCH_CXXFLAGS += -march=native -mtune=native
     $(info STATUS: Architecture: x86/x86_64 ($(ARCH)))
@@ -59,7 +48,6 @@ else
     $(warning WARNING: Unknown architecture: $(ARCH), using generic compile flags)
 endif
 
-# -------------------------- 依赖配置（OpenCV + OpenMP，支持C++） --------------------------
 ifneq ($(shell pkg-config --exists opencv4; echo $$?), 0)
     ifneq ($(shell pkg-config --exists opencv; echo $$?), 0)
         $(error ERROR: OpenCV not found! Please install OpenCV and configure pkg-config path.)
@@ -73,46 +61,46 @@ else
 endif
 OPENMP_FLAGS   := -fopenmp
 
-# -------------------------- 最终编译/链接选项汇总 --------------------------
-# C编译选项（纯C，无OpenCV头文件，补充-D_GNU_SOURCE，避免C编译器报错）
 CFLAGS         := $(COMMON_CFLAGS) $(ARCH_CFLAGS) $(DEFINES) $(OPENMP_FLAGS)
-# C++编译选项（包含OpenCV头文件，支持C++特性）
 CXXFLAGS       := $(COMMON_CXXFLAGS) $(ARCH_CXXFLAGS) $(DEFINES) $(OPENCV_CFLAGS) $(OPENMP_FLAGS)
-# 头文件包含路径
 INCLUDES       := -I$(INCLUDE_DIR)
-# 链接选项（用g++链接，包含OpenCV和OpenMP库，确保C++标准库依赖）
+LIB_LDFLAGS    := -shared
+MAIN_LDFLAGS   := -L$(LIB_DIR) -lstereo
 LDFLAGS        := $(OPENCV_LIBS) $(OPENMP_FLAGS)
-# 可执行文件（根目录）
 TARGET         := $(PROJECT_NAME)
 
-# -------------------------- 构建规则（混合编译，链接用g++） --------------------------
-# 默认目标：构建所有产物
-all: $(TARGET) scripts
+all: create_lib_dir $(LIB_FILE) $(TARGET)
 	$(info STATUS: Build completed successfully! Target: ./$(TARGET))
-	$(info STATUS: Final C compile flags: $(CFLAGS))
-	$(info STATUS: Final C++ compile flags: $(CXXFLAGS))
+	$(info STATUS: Shared library: $(LIB_FILE))
 
-# 构建可执行文件（关键：用g++链接，仅引用一次ALL_OBJS，无重复目标文件）
-$(TARGET): $(ALL_OBJS)
-	$(CXX) $(ALL_OBJS) -o $(TARGET) $(LDFLAGS)
-	$(info STATUS: Linked target file with g++ (C++/OpenCV support): ./$(TARGET))
+create_lib_dir:
+	$(MKDIR) $(LIB_DIR)
+	$(info STATUS: Created library directory: $(LIB_DIR))
 
-# 编译纯C文件：匹配所有.c文件（main.c + src/*.c），生成对应.o文件
+$(LIB_FILE): $(SRC_ALL_OBJS)
+	$(CXX) $(LIB_LDFLAGS) $(SRC_ALL_OBJS) -o $(LIB_FILE) $(LDFLAGS)
+	$(info STATUS: Generated shared library: $(LIB_FILE))
+
 %.o: %.c
 	$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
-	$(info STATUS: Compiled C file: $< → $@)
+	$(info STATUS: Compiled C file (shared lib): $< → $@)
 
-# 编译C++文件：匹配所有.cpp文件（src/*.cpp），生成对应.o文件
 %.o: %.cpp
 	$(CXX) $(CXXFLAGS) $(INCLUDES) -c $< -o $@
-	$(info STATUS: Compiled C++ file: $< → $@)
+	$(info STATUS: Compiled C++ file (shared lib): $< → $@)
 
-# 清理目标（删除所有.o文件和可执行文件，无残留）
+$(MAIN_OBJ): $(MAIN_SRC)
+	$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
+	$(info STATUS: Compiled main.c (caller): $< → $@)
+
+$(TARGET): $(MAIN_OBJ) $(LIB_FILE)
+	$(CC) $(MAIN_OBJ) -o $(TARGET) $(MAIN_LDFLAGS) $(LDFLAGS)
+	$(info STATUS: Linked executable: ./$(TARGET))
+
 clean:
-	$(RM) $(C_OBJS)
-	$(RM) $(CPP_OBJS)
-	$(RM) $(TARGET)
+	$(RM) $(SRC_ALL_OBJS) $(MAIN_OBJ)
+	$(RM) $(LIB_FILE) $(TARGET)
+	$(RM) -r $(LIB_DIR)
 	$(info STATUS: Cleaned all build artifacts successfully.)
 
-# -------------------------- 伪目标声明（避免与同名文件冲突） --------------------------
-.PHONY: all clean scripts
+.PHONY: all clean create_lib_dir

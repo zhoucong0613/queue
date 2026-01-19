@@ -1,5 +1,6 @@
 #ifndef __PERFORMANCE_HH__
 #define __PERFORMANCE_HH__
+
 #include <stdio.h>
 #include <getopt.h>
 #include <unistd.h>
@@ -10,6 +11,7 @@
 #include <ctype.h>
 #include <stdlib.h>
 #include <stdint.h>
+
 struct PerformanceTestParamSimple
 {
 	int test_count;
@@ -28,7 +30,6 @@ struct PerformanceTestParamSimple
 void performance_test_start_simple(struct PerformanceTestParamSimple *param);
 void performance_test_stop_simple(struct PerformanceTestParamSimple *param);
 
-
 struct PerformanceTestParam
 {
 	int test_count;
@@ -42,6 +43,8 @@ struct PerformanceTestParam
 	int min_diff;
 	int max_diff;
 };
+
 void performance_test_start(struct PerformanceTestParam *param);
 void performance_test_stop(struct PerformanceTestParam *param);
+
 #endif
