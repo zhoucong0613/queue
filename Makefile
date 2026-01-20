@@ -6,6 +6,24 @@ LIB_NAME       := libstereo.so
 LIB_DIR        := ./lib
 LIB_FILE       := $(LIB_DIR)/$(LIB_NAME)
 
+PYTHON_CONFIG   := python3-config
+PY_MODULE_NAME  := stereo_client_py
+PY_MODULE_FILE  := $(LIB_DIR)/$(PY_MODULE_NAME).so
+
+PYTHON_INCLUDE  := $(shell $(PYTHON_CONFIG) --includes)
+PYBIND11_CFLAGS := $(shell pkg-config --cflags pybind11 2>/dev/null || echo "")
+ifeq ($(PYBIND11_CFLAGS),)
+    PYBIND11_CFLAGS := $(shell python3 -m pybind11 --includes 2>/dev/null)
+endif
+ifeq ($(PYBIND11_CFLAGS),)
+    $(error ERROR: pybind11 not found! Please install it first: \
+        1. pip install pybind11 \
+        2. Or apt install pybind11-dev (Ubuntu) / yum install pybind11-devel (CentOS))
+endif
+
+WRAPPER_SRC    := wrapper.cpp
+WRAPPER_OBJ    := $(WRAPPER_SRC:.cpp=.o)
+
 SRC_C_FILES    := $(wildcard $(SRC_DIR)/*.c)
 SRC_CPP_FILES  := $(wildcard $(SRC_DIR)/*.cpp)
 MAIN_SRC       := main.c
@@ -23,6 +41,7 @@ MKDIR          := mkdir -p
 ARCH           := $(shell uname -m)
 COMMON_CFLAGS  := -Wall -O2 -fPIC -std=c99
 COMMON_CXXFLAGS:= -Wall -O2 -fPIC -std=c++11
+WRAPPER_CXXFLAGS:= $(COMMON_CXXFLAGS) $(PYTHON_INCLUDE) $(PYBIND11_CFLAGS)
 DEFINES        :=
 ARCH_CFLAGS    :=
 ARCH_CXXFLAGS  :=
@@ -67,11 +86,13 @@ INCLUDES       := -I$(INCLUDE_DIR)
 LIB_LDFLAGS    := -shared
 MAIN_LDFLAGS   := -L$(LIB_DIR) -lstereo
 LDFLAGS        := $(OPENCV_LIBS) $(OPENMP_FLAGS)
+WRAPPER_LDFLAGS  := -L$(LIB_DIR) -lstereo $(LDFLAGS) $(shell $(PYTHON_CONFIG) --ldflags)
 TARGET         := $(PROJECT_NAME)
 
-all: create_lib_dir $(LIB_FILE) $(TARGET)
+all: create_lib_dir $(LIB_FILE) $(TARGET) $(PY_MODULE_FILE)
 	$(info STATUS: Build completed successfully! Target: ./$(TARGET))
 	$(info STATUS: Shared library: $(LIB_FILE))
+	$(info STATUS: Python binding module: $(PY_MODULE_FILE))
 
 create_lib_dir:
 	$(MKDIR) $(LIB_DIR)
@@ -93,13 +114,21 @@ $(MAIN_OBJ): $(MAIN_SRC)
 	$(CC) $(CFLAGS) $(INCLUDES) -c $< -o $@
 	$(info STATUS: Compiled main.c (caller): $< → $@)
 
+$(WRAPPER_OBJ): $(WRAPPER_SRC)
+	$(CXX) $(WRAPPER_CXXFLAGS) $(INCLUDES) -c $< -o $@
+	$(info STATUS: Compiled C++ file (Python wrapper): $< → $@)
+
 $(TARGET): $(MAIN_OBJ) $(LIB_FILE)
 	$(CC) $(MAIN_OBJ) -o $(TARGET) $(MAIN_LDFLAGS) $(LDFLAGS)
 	$(info STATUS: Linked executable: ./$(TARGET))
 
+$(PY_MODULE_FILE): $(WRAPPER_OBJ)
+	$(CXX) -shared -fPIC $(WRAPPER_OBJ) -o $(PY_MODULE_FILE) $(WRAPPER_LDFLAGS)
+	$(info STATUS: Generated Python binding module: $(PY_MODULE_FILE))
+
 clean:
-	$(RM) $(SRC_ALL_OBJS) $(MAIN_OBJ)
-	$(RM) $(LIB_FILE) $(TARGET)
+	$(RM) $(SRC_ALL_OBJS) $(MAIN_OBJ) $(WRAPPER_OBJ)
+	$(RM) $(LIB_FILE) $(TARGET) $(PY_MODULE_FILE)
 	$(RM) -r $(LIB_DIR)
 	$(info STATUS: Cleaned all build artifacts successfully.)
 

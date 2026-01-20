@@ -54,17 +54,17 @@ typedef struct __attribute__((packed)) {
 } StereoExtrinsic_t;
 
 typedef struct __attribute__((packed)) {
-    char resolution;    // 0x0125
-    char vendor;        // 0x0126
-    char model1;        // 0x0127
-    char model2;        // 0x0128
-    char model3;        // 0x0129
-    char year_ten;      // 0x012A
-    char year_unit;     // 0x012B
-    char month;         // 0x012C
-    char day;           // 0x012D
-    char unique[5];     // 0x012E-0x0132（5个字节，完成14个有效数据的拼接）
-    char checksum;      // 0x0133（校验和，单独1个字节）
+    char resolution;
+    char vendor;
+    char model1;
+    char model2;
+    char model3;
+    char year_ten;
+    char year_unit;
+    char month;
+    char day;
+    char unique[5];
+    char checksum;
 } SnData_t;
 
 typedef struct {

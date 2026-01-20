@@ -18,7 +18,7 @@ typedef enum {
 	STREAM_NODE_IMU,
 	STREAM_NODE_TAIL
 } stream_node_type_t;
-#define STREAM_NODE_TYPE_NUM	STREAM_NODE_TAIL
+#define STREAM_NODE_TYPE_NUM	4
 
 #define STREAM_HEADER_MAGIC 0x0425BEEF
 
