@@ -143,28 +143,6 @@ static uint64_t get_current_timestamp_us() {
     return (uint64_t)ts.tv_sec * 1000000 + (uint64_t)ts.tv_nsec / 1000;
 }
 
-static int client_check_stream_header(uint8_t *stream_buffer)
-{
-	stream_header_t *stream_header = NULL;
-	stream_header = (stream_header_t *)stream_buffer;
-
-	if (verbose_mode & VERBOSE_STREAM) {
-		printf("[Client] Stream Magic = %x, Total_size = %d\n", stream_header->magic, stream_header->total_size);
-	}
-
-	if (stream_header->magic != STREAM_HEADER_MAGIC) {
-		printf("Magic Error: %x\n", stream_header->magic);
-		return -1;
-	}
-
-	// if (stream_header->total_size != size) {
-	// 	printf("Size Error: %d != %d\n", stream_header->total_size, size);
-	// 	return -1;
-	// }
-
-	return 0;
-}
-
 static void client_parse_imu_buffer(void *imu_buffer, uint32_t imu_size)
 {
 	uint32_t i;
@@ -180,46 +158,6 @@ static void client_parse_imu_buffer(void *imu_buffer, uint32_t imu_size)
 		imu_subnode_data++;
 	}
 }
-
-static int client_get_buffer_size_by_type(uint8_t *stream_buffer, int type, void **data_buffer, uint32_t *size)
-{
-	if (type < 0 || type >= STREAM_NODE_TAIL) {
-		printf("client_get_buffer_by_type: type error[%d]\n", type);
-		return -1;
-	}
-
-	// No available
-	if (stream_info.stream_nodes[type].available == 0) {
-		return -1;
-	}
-
-	stream_header_t *stream_header = (stream_header_t *)stream_buffer;
-	stream_node_header_t *node_header = (stream_node_header_t *)&stream_header->node_headers[type];
-	uint8_t *data_ptr = stream_buffer + sizeof(stream_header_t);
-
-	if (node_header->size <= 0) {
-		return -1;
-	}
-
-	*data_buffer = data_ptr + node_header->offset;
-	*size = node_header->size;
-	return 0;
-}
-
-#if 0
-static uint32_t client_get_frameid_by_type(uint8_t *stream_buffer, int type)
-{
-	if (type < 0 || type >= STREAM_NODE_TAIL) {
-		printf("client_get_buffer_by_type: type error[%d]\n", type);
-		return -1;
-	}
-
-	stream_header_t *stream_header = (stream_header_t *)stream_buffer;
-	stream_node_header_t *node_header = (stream_node_header_t *)&stream_header->node_headers[type];
-
-	return node_header->frame_id;
-}
-#endif
 
 void *client_recv_data(void *context)
 {
@@ -241,21 +179,13 @@ void *client_recv_data(void *context)
 			break;
 		}
 
-		len_recv = recv(client_fd, data_item->items, sync_queue_info->data_item_size, MSG_WAITALL);
-        if (len_recv < 0) {
-			printf("[Client] recv Err[%ld] %s", len_recv, strerror(errno));
+		len_recv = stereo_client_recv_data(client_fd, data_item->items, sync_queue_info->data_item_size);
+		if (len_recv < 0) {
 			break;
 		}
 		else if (len_recv == 0) {
-			printf("[Client] Closed.\n");
 			break;
 		}
-		// else if (len_recv > 0) {
-		// 	if (verbose_mode & VERBOSE_STREAM) {
-		// 		uint8_t *ptr = (uint8_t *)data_item->items;
-		// 		printf("[Client] Recv: len = %ld, %02x %02x %02x %02x\n", len_recv, ptr[0], ptr[1], ptr[2], ptr[3]);
-		// 	}
-		// }
 
         ret = sync_queue_save_inused_object(sync_queue, 2000, data_item);
 		if(ret != 0){

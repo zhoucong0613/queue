@@ -3,3 +3,4 @@ lib/
 sn_info.txt
 stereo_client
 stereo_abh.yaml
+python/__pycache__/

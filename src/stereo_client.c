@@ -265,3 +265,76 @@ void stereo_client_release(int client_fd)
         close(client_fd);
     }
 }
+
+
+ssize_t stereo_client_recv_data(int client_fd, void *buffer, size_t buffer_size)
+{
+
+    ssize_t len_recv = recv(client_fd, buffer, buffer_size, MSG_WAITALL);
+
+    if (len_recv < 0) {
+        printf("[Client] recv Err[%ld] %s\n", len_recv, strerror(errno));
+    } else if (len_recv == 0) {
+        printf("[Client] Closed.\n");
+    }
+
+    return len_recv;
+}
+
+int client_check_stream_header(uint8_t *stream_buffer)
+{
+	stream_header_t *stream_header = NULL;
+	stream_header = (stream_header_t *)stream_buffer;
+
+	if (stream_header->magic != STREAM_HEADER_MAGIC) {
+		printf("Magic Error: %x\n", stream_header->magic);
+		return -1;
+	}
+
+	// if (stream_header->total_size != size) {
+	// 	printf("Size Error: %d != %d\n", stream_header->total_size, size);
+	// 	return -1;
+	// }
+
+	return 0;
+}
+
+int client_get_buffer_size_by_type(uint8_t *stream_buffer, int type, void **data_buffer, uint32_t *size)
+{
+	if (type < 0 || type >= STREAM_NODE_TAIL) {
+		printf("client_get_buffer_by_type: type error[%d]\n", type);
+		return -1;
+	}
+
+	stream_header_t *stream_header = (stream_header_t *)stream_buffer;
+	stream_node_header_t *node_header = (stream_node_header_t *)&stream_header->node_headers[type];
+	uint8_t *data_ptr = stream_buffer + sizeof(stream_header_t);
+
+	if (node_header->size <= 0) {
+		return -1;
+	}
+
+	*data_buffer = data_ptr + node_header->offset;
+	*size = node_header->size;
+	return 0;
+}
+
+uint32_t client_get_frameid_by_type(uint8_t *stream_buffer, int type)
+{
+	if (type < 0 || type >= STREAM_NODE_TAIL) {
+		printf("client_get_buffer_by_type: type error[%d]\n", type);
+		return -1;
+	}
+
+	stream_header_t *stream_header = (stream_header_t *)stream_buffer;
+	stream_node_header_t *node_header = (stream_node_header_t *)&stream_header->node_headers[type];
+
+	return node_header->frame_id;
+}
+
+void stereo_parse_imu_buffer(void *imu_buffer, imu_subnode_data_t *imu_subnode_data)
+{
+    if (imu_buffer == NULL || imu_subnode_data == NULL) return;
+    
+    *imu_subnode_data = *((imu_subnode_data_t*)imu_buffer);
+}

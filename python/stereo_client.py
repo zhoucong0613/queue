@@ -3,22 +3,29 @@ import signal
 import sys
 import threading
 import time 
+import queue
 import stereo_utils
+import struct
+import numpy as np
 import stereo_client_py as stereo
 
 VERBOSE_MODE_DEFAULT = 0
 DUMPFILE_MODE_DEFAULT = 0
 SELECTED_MODE_DEFAULT = stereo.MODE_DEFAULT
 PREVIEW_FLAG_DEFAULT = False
+IMU_STRUCT_SIZE = 32 
+
+STEREO_RES_WIDTH = 640
+STEREO_RES_HEIGHT = 352
 
 client_fd = -1
 stream_info = None
 intr = None
 calib_data = None
 running = 0 
-recv_to_consumer = None
 client_data_thread = None
 consumer_thread = None
+imu_data = None
 
 def signal_handle(signum, frame):
     print("\n=====================================")
@@ -64,22 +71,62 @@ def parse_args():
 
 def client_recv_data():
     print("[Thread] client_recv_data ==> Start")
-    global running
+    global running, client_fd, stream_info, imu_data
+
+    # 设置缓冲区大小，增加兜底值防止total_size为0
+    buffer_size = stream_info.total_size 
+    print(f"[Producer] Buffer size set to: {buffer_size} bytes")
 
     while running:
-        time.sleep(0.01)
+        recv_buffer = bytearray(buffer_size)
+        received_bytes = stereo.stereo_client_recv_data(client_fd, recv_buffer)
+        time.sleep(0.001)
+
+        header_check_ret = stereo.client_check_stream_header(recv_buffer)
+        if header_check_ret != 0:
+            print("[Client] Header Error")
+            running = False
+            break
+
+        ret_code, depth_offset, depth_size = stereo.client_get_buffer_size_by_type(recv_buffer, stereo.STREAM_NODE_DEPTH)
+        if ret_code == 0:
+            depth_bytes = recv_buffer[depth_offset : depth_offset + depth_size]
+            depth_buffer = np.frombuffer(depth_bytes, dtype=np.uint16)
+            stereo.show_depth_map(depth_buffer, depth_size, STEREO_RES_WIDTH, STEREO_RES_HEIGHT)
+                       
+        ret_code, right_offset, right_size = stereo.client_get_buffer_size_by_type(recv_buffer, stereo.STREAM_NODE_CAM_RIGHT)
+        if ret_code == 0:
+            right_buffer = recv_buffer[right_offset : right_offset + right_size]
+            stereo.show_single_camera(right_buffer, right_size, SELECTED_MODE_DEFAULT, "Right Camera")
+        
+        ret_code, left_offset, left_size = stereo.client_get_buffer_size_by_type(recv_buffer, stereo.STREAM_NODE_CAM_LEFT)
+        if ret_code == 0:
+            left_buffer = recv_buffer[left_offset : left_offset + left_size]
+            stereo.show_single_camera(left_buffer, left_size, SELECTED_MODE_DEFAULT, "Left Camera")
+
+        ret_code, imu_offset, imu_size = stereo.client_get_buffer_size_by_type(recv_buffer, stereo.STREAM_NODE_IMU)
+        if ret_code == 0:
+            imu_buffer = recv_buffer[imu_offset : imu_offset + imu_size]
+            stereo.stereo_parse_imu_buffer(imu_buffer, imu_data)
+            print(f"时间戳 (timestamp): {imu_data.timestamp}")
+            print(f"加速度计 - ax: {imu_data.ax:.6f}, ay: {imu_data.ay:.6f}, az: {imu_data.az:.6f} (m/s²)")
+            print(f"陀螺仪 - gx: {imu_data.gx:.6f}, gy: {imu_data.gy:.6f}, gz: {imu_data.gz:.6f} (rad/s)")
+        else:
+            print(f"获取IMU缓冲区失败，ret_code={ret_code}，imu_size={imu_size}")            
+        time.sleep(0.0001)
+
     print("[Thread] client_recv_data ==> Quit")
 
 def consumer_process():
     print("[Thread] consumer_process ==> Start")
     global running
     while running:
-        time.sleep(0.01)
+        time.sleep(0.001)
     print("[Thread] consumer_process ==> Quit")
 
 def main():
 
-    global client_fd, stream_info, intr, calib_data, running, recv_to_consumer
+    global client_fd, stream_info, intr, calib_data, running, imu_data
     global client_data_thread, consumer_thread
 
     signal.signal(signal.SIGINT, signal_handle)
@@ -97,6 +144,7 @@ def main():
     stream_info = stereo.ServerStreamInfo() 
     intr = stereo.CameraIntrinsics()
     calib_data = stereo.CompleteCalibData()
+    imu_data = stereo.ImuSubnodeData()
     
     print("=== Stereo Client Initializing ===")
     print(f"Interface: {ifname}")
@@ -126,30 +174,7 @@ def main():
 
     # stereo_utils.print_all_init_values(args, client_fd, stream_info, intr, calib_data)
 
-    print("\n=== Sync Queue Initializing ===")
-    sync_queue_info_recv_consumer = stereo.SyncQueueInfo()
-    sync_queue_info_recv_consumer.productor_name = "recv_data"
-    sync_queue_info_recv_consumer.consumer_name = "consumer"
-    sync_queue_info_recv_consumer.is_need_malloc_in_advance = 0
-    sync_queue_info_recv_consumer.is_external_buffer = 0
-    sync_queue_info_recv_consumer.queue_len = 3
-    sync_queue_info_recv_consumer.data_item_size = stream_info.total_size
-    sync_queue_info_recv_consumer.data_item_count = 1
-    sync_queue_info_recv_consumer.item_data_init_param = None
-    sync_queue_info_recv_consumer.item_data_init_func = None
-    sync_queue_info_recv_consumer.item_data_deinit_param = None
-    sync_queue_info_recv_consumer.item_data_deinit_func = None
-    
-    recv_to_consumer = stereo.SyncQueue()
-
-    ret = stereo.sync_queue_create(recv_to_consumer, sync_queue_info_recv_consumer)
-    if ret != 0:
-        print("sync queue create failed for right cam.")
-        stereo.stereo_client_release(client_fd)
-        return -1
-
     running = 1
-    print(f"Sync queue create successfully! running={running}")
 
     client_data_thread = threading.Thread(target=client_recv_data, name="client_recv_data")
     consumer_thread = threading.Thread(target=consumer_process, name="consumer_process")
@@ -166,9 +191,8 @@ def main():
         print("[Main] Waiting for consumer_process thread to exit...")
         consumer_thread.join()
         consumer_thread = None
+    
 
-    stereo.sync_queue_destory(recv_to_consumer)
-    print("Sync queue destroyed successfully!")
     stereo.stereo_client_release(client_fd)
     print("[Client] stereo client resource released successfully!")
     return 0
@@ -182,6 +206,4 @@ if __name__ == "__main__":
         print_help()
         if client_fd >= 0:
             stereo.stereo_client_release(client_fd)
-        if recv_to_consumer is not None:
-            stereo.sync_queue_destory(recv_to_consumer)
         exit(1)

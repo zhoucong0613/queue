@@ -1,8 +1,6 @@
 #include <pybind11/pybind11.h>
-#include <pybind11/functional.h>
-#include <unordered_map>
-#include <mutex>
-#include <tuple>
+#include <pybind11/buffer_info.h>
+#include <string>
 
 extern "C" {
     #include "performance_test_util.h"
@@ -16,68 +14,6 @@ extern "C" {
 }
 
 namespace py = pybind11;
-
-static char* py_str_to_c_str(const std::string& s) {
-    if (s.empty()) return nullptr;
-    char* buf = new char[s.size() + 1];
-    std::strcpy(buf, s.c_str());
-    return buf;
-}
-
-static void free_c_str(char* ptr) {
-    if (ptr) delete[] ptr;
-}
-
-static std::unordered_map<uint64_t, py::function> g_sync_queue_cb_map;
-static std::mutex g_sync_queue_cb_mutex;
-static uint64_t g_cb_id = 0;
-
-static int sync_queue_cb_wrapper(void* param, void* data) {
-    std::lock_guard<std::mutex> lock(g_sync_queue_cb_mutex);
-    uint64_t cb_id = reinterpret_cast<uint64_t>(param);
-    auto it = g_sync_queue_cb_map.find(cb_id);
-    if (it == g_sync_queue_cb_map.end()) return -1;
-    
-    try {
-        return it->second(py::capsule(param), py::capsule(data)).cast<int>();
-    } catch (const py::error_already_set& e) {
-        py::print("Sync queue callback error:", e.what());
-        return -1;
-    }
-}
-
-static uint64_t register_sync_queue_cb(py::function cb) {
-    std::lock_guard<std::mutex> lock(g_sync_queue_cb_mutex);
-    uint64_t id = ++g_cb_id;
-    g_sync_queue_cb_map[id] = cb;
-    return id;
-}
-
-static void unregister_sync_queue_cb(uint64_t cb_id) {
-    std::lock_guard<std::mutex> lock(g_sync_queue_cb_mutex);
-    g_sync_queue_cb_map.erase(cb_id);
-}
-
-std::tuple<int, py::capsule> sync_queue_get_unused_object_wrapper(sync_queue_t* sync_queue, uint32_t timeout_ms) {
-    data_item_t *data_item = nullptr;
-    int ret = sync_queue_get_unused_object(sync_queue, timeout_ms, &data_item);
-    py::capsule cap(data_item, [](void *p) {});
-    return std::make_tuple(ret, cap);
-}
-
-std::tuple<int, py::capsule> sync_queue_obtain_inused_object_wrapper(sync_queue_t* sync_queue, uint32_t timeout_ms) {
-    data_item_t *data_item = nullptr;
-    int ret = sync_queue_obtain_inused_object(sync_queue, timeout_ms, &data_item);
-    py::capsule cap(data_item, [](void *p) {});
-    return std::make_tuple(ret, cap);
-}
-
-std::tuple<int, py::capsule> sync_queue_obtain_inused_object_width_user_wrapper(sync_queue_t* sync_queue, uint32_t timeout_ms, int user_flag) {
-    data_item_t *data_item = nullptr;
-    int ret = sync_queue_obtain_inused_object_width_user(sync_queue, timeout_ms, &data_item, user_flag);
-    py::capsule cap(data_item, [](void *p) {});
-    return std::make_tuple(ret, cap);
-}
 
 PYBIND11_MODULE(stereo_client_py, m) {
       m.doc() = "Python binding for stereo client";
@@ -237,158 +173,265 @@ PYBIND11_MODULE(stereo_client_py, m) {
             py::arg("client_fd"),
             "Release stereo client resource");
 
+      m.def("stereo_client_recv_data",
+      [](int client_fd, py::buffer buffer) {
+            py::buffer_info info = buffer.request();
 
-      m.attr("SYNC_QUEUE_MAX_USER") = SYNC_QUEUE_MAX_USER;
+            if (info.format != py::format_descriptor<uint8_t>::format()) {
+                  throw py::type_error("stereo_client_recv_data requires a bytearray buffer (uint8_t type)");
+            }
+            if (info.ndim != 1) {
+                  throw py::value_error("stereo_client_recv_data requires a 1-dimensional buffer (only bytearray supported)");
+            }
 
-      py::class_<data_item_t>(m, "DataItem")
-            .def(py::init<>())
-            .def_readwrite("is_init_added", &data_item_t::is_init_added)
-            .def_readwrite("item_count", &data_item_t::item_count)
-            .def_readwrite("ref_repay", &data_item_t::ref_repay)
-            .def_readwrite("ref_obtain", &data_item_t::ref_obtain)
-            .def_readwrite("index", &data_item_t::index)
-            .def_readwrite("inused_update_time_ms", &data_item_t::inused_update_time_ms)
-            .def_readwrite("unused_update_time_ms", &data_item_t::unused_update_time_ms)
-            .def_readwrite("inused_frame_index", &data_item_t::inused_frame_index)
-            .def_readwrite("unused_frame_index", &data_item_t::unused_frame_index)
-            .def("get_items", [](const data_item_t &self) {
-                  return reinterpret_cast<uint64_t>(self.items);
-            }, "Get items pointer (as uint64_t address)")
-            .def("set_items", [](data_item_t &self, uint64_t addr) {
-                  self.items = reinterpret_cast<void*>(addr);
-            }, "Set items pointer (from uint64_t address)", py::arg("addr"))
-            .def("get_user_recoder", [](const data_item_t &self, size_t idx) {
-                  if (idx >= SYNC_QUEUE_MAX_USER) throw py::index_error("user_recoder index out of range");
-                  return self.user_recoder[idx];
-            }, "Get user_recoder element by index", py::arg("idx"))
-            .def("set_user_recoder", [](data_item_t &self, size_t idx, uint8_t value) {
-                  if (idx >= SYNC_QUEUE_MAX_USER) throw py::index_error("user_recoder index out of range");
-                  self.user_recoder[idx] = value;
-            }, "Set user_recoder element by index", py::arg("idx"), py::arg("value"));
+            ssize_t ret = stereo_client_recv_data(client_fd, info.ptr, info.size);
 
+            if (ret < 0) {
+                  throw std::runtime_error("stereo_client_recv_data failed with error code: " + std::to_string(ret));
+            }
 
-      py::class_<sync_queue_info_t>(m, "SyncQueueInfo")
-            .def(py::init<>())
-            .def_property("productor_name",
-                [](const sync_queue_info_t& self) {
-                    return self.productor_name ? std::string(self.productor_name) : "";
-                },
-                [](sync_queue_info_t& self, const std::string& s) {
-                    if (self.productor_name) free_c_str(self.productor_name);
-                    self.productor_name = py_str_to_c_str(s);
-                })
-            .def_property("consumer_name",
-                [](const sync_queue_info_t& self) {
-                    return self.consumer_name ? std::string(self.consumer_name) : "";
-                },
-                [](sync_queue_info_t& self, const std::string& s) {
-                    if (self.consumer_name) free_c_str(self.consumer_name);
-                    self.consumer_name = py_str_to_c_str(s);
-                })
-            .def_readwrite("is_need_malloc_in_advance", &sync_queue_info_t::is_need_malloc_in_advance)
-            .def_readwrite("is_external_buffer", &sync_queue_info_t::is_external_buffer)
-            .def_readwrite("queue_len", &sync_queue_info_t::queue_len)
-            .def_readwrite("data_item_size", &sync_queue_info_t::data_item_size)
-            .def_readwrite("data_item_count", &sync_queue_info_t::data_item_count)
-            .def_readwrite("item_data_init_param", &sync_queue_info_t::item_data_init_param)
-            .def_readwrite("item_data_deinit_param", &sync_queue_info_t::item_data_deinit_param)
-            .def_property("item_data_init_func",
-                [](const sync_queue_info_t& self) {
-                    return self.item_data_init_func ? reinterpret_cast<uint64_t>(self.item_data_init_param) : 0ULL;
-                },
-                [](sync_queue_info_t& self, py::object cb_obj) {
-                    if (cb_obj.is_none() || !py::isinstance<py::function>(cb_obj)) {
-                        self.item_data_init_func = nullptr;
-                        self.item_data_init_param = nullptr;
-                        return;
-                    }
-                    py::function cb = cb_obj.cast<py::function>();
-                    uint64_t cb_id = register_sync_queue_cb(cb);
-                    self.item_data_init_func = &sync_queue_cb_wrapper;
-                    self.item_data_init_param = reinterpret_cast<void*>(cb_id);
-                })
-            .def_property("item_data_deinit_func",
-                [](const sync_queue_info_t& self) {
-                    return self.item_data_deinit_func ? reinterpret_cast<uint64_t>(self.item_data_deinit_param) : 0ULL;
-                },
-                [](sync_queue_info_t& self, py::object cb_obj) {
-                    if (cb_obj.is_none() || !py::isinstance<py::function>(cb_obj)) {
-                        self.item_data_deinit_func = nullptr;
-                        self.item_data_deinit_param = nullptr;
-                        return;
-                    }
-                    py::function cb = cb_obj.cast<py::function>();
-                    uint64_t cb_id = register_sync_queue_cb(cb);
-                    self.item_data_deinit_func = &sync_queue_cb_wrapper;
-                    self.item_data_deinit_param = reinterpret_cast<void*>(cb_id);
-                });
-
-      py::class_<sync_queue_t>(m, "SyncQueue")
-            .def(py::init<>())
-            .def_readwrite("user_count", &sync_queue_t::user_count)
-            .def_readwrite("inused_queue_count", &sync_queue_t::inused_queue_count)
-            .def_readwrite("sync_queue_info", &sync_queue_t::sync_queue_info)
-            .def_property("ununsed_queue", nullptr, nullptr)
-            .def_property("inused_queue", nullptr, nullptr);
-
-      m.def("sync_queue_unregister_cb", &unregister_sync_queue_cb, py::arg("cb_id"), "Unregister sync queue callback");
-      m.def("sync_queue_add_user", &sync_queue_add_user, py::arg("sync_queue"), "Add user to sync queue");
-      m.def("sync_queue_create", &sync_queue_create, py::arg("sync_queue"), py::arg("sync_queue_info"), "Create sync queue (compatible with C logic)");
-      m.def("sync_queue_create_multi_user", &sync_queue_create_multi_user, py::arg("sync_queue"), py::arg("sync_queue_info"), "Create multi-user sync queue");
-      m.def("sync_queue_destory", &sync_queue_destory, py::arg("sync_queue"), "Destroy sync queue");
-      // 生产者函数
-      m.def("sync_queue_get_unused_object", &sync_queue_get_unused_object_wrapper, 
-            py::arg("sync_queue"), py::arg("timeout_ms"), 
-            "Get unused object (producer), return (ret, data_item_capsule)");
-      m.def("sync_queue_save_inused_object", &sync_queue_save_inused_object, 
-            py::arg("sync_queue"), py::arg("timeout_ms"), py::arg("data_item"), 
-            "Save inused object (producer)");
+            return ret;
+      },
+      py::arg("client_fd"), py::arg("buffer"),
+      "Receive data from stereo client to Python bytearray buffer\n"
+      "Args:\n"
+      "  client_fd: Valid client file descriptor from stereo_client_create\n"
+      "  buffer: Writable bytearray to store received data (pre-allocated)\n"
+      "Returns:\n"
+      "  Number of bytes successfully received (non-negative integer)\n"
+      "Raises:\n"
+      "  TypeError: If buffer is not a bytearray\n"
+      "  ValueError: If buffer is not 1-dimensional\n"
+      "  RuntimeError: If C function returns negative error code");
       
-      // 消费者函数
-      m.def("sync_queue_obtain_inused_object", &sync_queue_obtain_inused_object_wrapper, 
-            py::arg("sync_queue"), py::arg("timeout_ms"), 
-            "Obtain inused object (consumer), return (ret, data_item_capsule)");
-      m.def("sync_queue_obtain_inused_object_width_user", &sync_queue_obtain_inused_object_width_user_wrapper, 
-            py::arg("sync_queue"), py::arg("timeout_ms"), py::arg("user_flag"), 
-            "Obtain inused object with user flag, return (ret, data_item_capsule)");
-      m.def("sync_queue_repay_unused_object", &sync_queue_repay_unused_object, 
-            py::arg("sync_queue"), py::arg("timeout_ms"), py::arg("data_item"), 
-            "Repay unused object (consumer)");
-
-      py::class_<PerformanceTestParamSimple>(m, "PerformanceTestParamSimple")
-      .def(py::init<>())
-      .def_readwrite("test_count", &PerformanceTestParamSimple::test_count)
-      .def_readwrite("iteration_number", &PerformanceTestParamSimple::iteration_number)
-      .def_readwrite("run_count", &PerformanceTestParamSimple::run_count)
-      .def_readwrite("test_start_time_us", &PerformanceTestParamSimple::test_start_time_us)
-      .def_readwrite("test_end_time_us", &PerformanceTestParamSimple::test_end_time_us)
-      .def_readwrite("start_time_us", &PerformanceTestParamSimple::start_time_us)
-      .def_readwrite("min_diff", &PerformanceTestParamSimple::min_diff)
-      .def_readwrite("max_diff", &PerformanceTestParamSimple::max_diff)
-      .def_property("test_case",
-            [](const PerformanceTestParamSimple& self) {
-                  return self.test_case ? std::string(self.test_case) : "";
-            },
-            [](PerformanceTestParamSimple& self, const std::string& s) {
-                  static std::unordered_map<const char*, std::string> test_case_cache;
-                  if (self.test_case && test_case_cache.count(self.test_case)) {
-                  delete[] const_cast<char*>(self.test_case);
-                  test_case_cache.erase(self.test_case);
+      
+            // 封装 client_check_stream_header 函数
+      m.def("client_check_stream_header",
+            [](py::buffer buffer) {
+                  py::buffer_info info = buffer.request();
+                  
+                  // 校验缓冲区类型和维度
+                  if (info.format != py::format_descriptor<uint8_t>::format()) {
+                        throw py::type_error("client_check_stream_header requires a uint8_t (byte) buffer");
                   }
-                  char* new_str = new char[s.size() + 1];
-                  std::strcpy(new_str, s.c_str());
-                  self.test_case = const_cast<const char*>(new_str);
-                  test_case_cache[self.test_case] = s;
-            });
+                  if (info.ndim != 1) {
+                        throw py::value_error("client_check_stream_header requires a 1-dimensional buffer");
+                  }
+                  if (info.ptr == nullptr) {
+                        throw std::runtime_error("client_check_stream_header buffer is null");
+                  }
 
-      m.def("performance_test_start_simple",
-            &performance_test_start_simple,
-            py::arg("param"),
-            "Start performance test (simple version), param: PerformanceTestParamSimple instance");
+                  // 调用C函数
+                  int ret = client_check_stream_header(static_cast<uint8_t*>(info.ptr));
+                  return ret;
+            },
+            py::arg("stream_buffer"),
+            "Check the validity of stream buffer header\n"
+            "Args:\n"
+            "  stream_buffer: 1-dimensional bytearray buffer containing stream data\n"
+            "Returns:\n"
+            "  int: 0 for valid header, negative for error, positive for other status (depends on C implementation)\n"
+            "Raises:\n"
+            "  TypeError: If buffer is not byte type\n"
+            "  ValueError: If buffer is not 1-dimensional\n"
+            "  RuntimeError: If buffer is null");
 
-      m.def("performance_test_stop_simple",
-            &performance_test_stop_simple,
-            py::arg("param"),
-            "Stop performance test (simple version), param: PerformanceTestParamSimple instance");     
+      m.def("client_get_buffer_size_by_type",
+            [](py::buffer stream_buffer, int type) {
+                  // 1. 获取缓冲区信息并严格校验
+                  py::buffer_info info = stream_buffer.request();
+                  
+                  // 校验缓冲区类型：必须是uint8_t（byte）
+                  if (info.format != py::format_descriptor<uint8_t>::format()) {
+                        throw py::type_error("stream_buffer must be a uint8_t (byte) buffer");
+                  }
+                  // 校验缓冲区维度：必须是一维
+                  if (info.ndim != 1) {
+                        throw py::value_error("stream_buffer must be 1-dimensional (bytearray)");
+                  }
+                  // 校验缓冲区指针非空
+                  if (info.ptr == nullptr) {
+                        throw std::runtime_error("stream_buffer pointer is null");
+                  }
 
+                  // 2. 初始化输出参数（对应C代码中传入空指针，由函数赋值）
+                  void* data_buffer = nullptr;  // 输出：指向stream_buffer内数据的指针
+                  uint32_t size = 0;            // 输出：数据长度
+
+                  // 3. 调用C函数（严格传递输入输出参数）
+                  int ret_code = client_get_buffer_size_by_type(
+                  static_cast<uint8_t*>(info.ptr),  // 输入：stream_buffer起始地址
+                  type,                             // 输入：流类型（如STREAM_NODE_DEPTH）
+                  &data_buffer,                     // 输出：data_buffer指针的地址
+                  &size                             // 输出：size变量的地址
+                  );
+
+                  // 4. 转换输出参数为Python易用格式（指针→偏移量，避免裸指针风险）
+                  // data_buffer是相对于stream_buffer的内部指针，转换为字节偏移量
+                  uint64_t data_offset = 0;
+                  if (data_buffer != nullptr) {
+                        // 计算偏移量：目标指针 - 缓冲区起始指针
+                        data_offset = reinterpret_cast<uint8_t*>(data_buffer) - static_cast<uint8_t*>(info.ptr);
+                  }
+
+                  // 5. 返回结果：(函数返回码, 数据偏移量, 数据大小)
+                  return py::make_tuple(ret_code, data_offset, size);
+            },
+            py::arg("stream_buffer"), py::arg("type"),
+            R"(Get buffer pointer and size by stream type (strictly match C function semantics)
+            
+            Args:
+            stream_buffer (bytearray): 1-dimensional uint8_t buffer (input)
+            type (int): Stream type (use StreamNodeType enum, e.g. STREAM_NODE_DEPTH) (input)
+            
+            Returns:
+            tuple: (ret_code: int, data_offset: int, size: uint32_t)
+                  - ret_code: 0 = success, negative = error (C function return value)
+                  - data_offset: Offset of target data in stream_buffer (bytes, output from data_buffer)
+                  - size: Size of target data (bytes, output from size)
+            
+            Note:
+            Equivalent to C code: 
+                  int client_get_buffer_size_by_type(uint8_t *stream_buffer, int type, void **data_buffer, uint32_t *size);
+            - data_buffer (C output) → data_offset (Python, offset in stream_buffer)
+            - size (C output) → size (Python)
+            )");
+
+      m.def("client_get_frameid_by_type",
+            [](py::buffer stream_buffer, int type) {
+                  py::buffer_info info = stream_buffer.request();
+                  
+                  if (info.format != py::format_descriptor<uint8_t>::format()) {
+                        throw py::type_error("client_get_frameid_by_type requires a uint8_t (byte) buffer");
+                  }
+                  if (info.ndim != 1) {
+                        throw py::value_error("client_get_frameid_by_type requires a 1-dimensional buffer");
+                  }
+                  if (info.ptr == nullptr) {
+                        throw std::runtime_error("client_get_frameid_by_type buffer is null");
+                  }
+
+                  uint32_t frame_id = client_get_frameid_by_type(static_cast<uint8_t*>(info.ptr), type);
+                  return frame_id;
+            },
+            py::arg("stream_buffer"), py::arg("type"),
+            "Get frame ID by stream type\n"
+            "Args:\n"
+            "  stream_buffer: 1-dimensional bytearray buffer containing stream data\n"
+            "  type: Stream type (use StreamNodeType enum values)\n"
+            "Returns:\n"
+            "  uint32_t: Frame ID of the specified stream type\n"
+            "Raises:\n"
+            "  TypeError: If buffer is not byte type\n"
+            "  ValueError: If buffer is not 1-dimensional\n"
+            "  RuntimeError: If buffer is null");
+
+      // ========== 新增：封装 show_single_camera 函数 ==========
+      m.def("show_single_camera",
+            [](py::buffer cam_buffer, uint32_t cam_size, int mode, const std::string& win_name) {
+                  // 校验缓冲区类型（uint8_t/byte）
+                  py::buffer_info info = cam_buffer.request();
+                  if (info.format != py::format_descriptor<uint8_t>::format()) {
+                        throw py::type_error("show_single_camera requires uint8_t (byte) buffer for cam_buffer");
+                  }
+                  if (info.ndim != 1) {
+                        throw py::value_error("show_single_camera requires 1-dimensional byte buffer");
+                  }
+                  if (info.ptr == nullptr) {
+                        throw std::runtime_error("cam_buffer pointer is null");
+                  }
+
+                  // 调用C函数
+                  show_single_camera(
+                        static_cast<uint8_t*>(info.ptr),
+                        cam_size,
+                        mode,
+                        win_name.c_str()
+                  );
+            },
+            py::arg("cam_buffer"), py::arg("cam_size"), py::arg("mode"), py::arg("win_name"),
+            R"(显示单个相机的NV12格式图像
+            Args:
+                cam_buffer: 1维bytearray（uint8_t），相机图像缓冲区（NV12格式）
+                cam_size: 缓冲区字节大小（uint32_t）
+                mode: 相机模式（1: 1280x1088, 2: 1088x1280）
+                win_name: 显示窗口名称（字符串）
+            )");
+
+      // ========== 新增：封装 show_depth_map 函数 ==========
+      m.def("show_depth_map",
+            [](py::buffer depth_buffer, size_t depth_size, int width, int height) {
+                  // 校验缓冲区类型（uint16_t）
+                  py::buffer_info info = depth_buffer.request();
+                  if (info.format != py::format_descriptor<uint16_t>::format()) {
+                        throw py::type_error("show_depth_map requires uint16_t buffer for depth_buffer");
+                  }
+                  if (info.ndim != 1) {
+                        throw py::value_error("show_depth_map requires 1-dimensional buffer");
+                  }
+                  if (info.ptr == nullptr) {
+                        throw std::runtime_error("depth_buffer pointer is null");
+                  }
+
+                  // 调用C函数
+                  show_depth_map(
+                        static_cast<uint16_t*>(info.ptr),
+                        depth_size,
+                        width,
+                        height
+                  );
+            },
+            py::arg("depth_buffer"), py::arg("depth_size"), py::arg("width"), py::arg("height"),
+            R"(显示深度图（原始归一化图 + Outdoor伪彩色可视化图）
+            Args:
+                depth_buffer: 1维缓冲区（uint16_t），深度数据（单位：毫米）
+                depth_size: 缓冲区字节大小（size_t）
+                width: 深度图宽度（int）
+                height: 深度图高度（int）
+            )");
+
+      py::class_<imu_subnode_data_t>(m, "ImuSubnodeData")
+            .def(py::init<>())  // 默认构造函数
+            .def_readwrite("timestamp", &imu_subnode_data_t::timestamp)
+            .def_readwrite("ax", &imu_subnode_data_t::ax)
+            .def_readwrite("ay", &imu_subnode_data_t::ay)
+            .def_readwrite("az", &imu_subnode_data_t::az)
+            .def_readwrite("gx", &imu_subnode_data_t::gx)
+            .def_readwrite("gy", &imu_subnode_data_t::gy)
+            .def_readwrite("gz", &imu_subnode_data_t::gz);
+
+      m.def("stereo_parse_imu_buffer",
+            [](py::buffer imu_buffer, py::object imu_subnode_data_obj) {
+                  // 1. 校验 IMU 缓冲区类型和维度（必须是 1 维 bytearray）
+                  py::buffer_info imu_buf_info = imu_buffer.request();
+                  if (imu_buf_info.format != py::format_descriptor<uint8_t>::format()) {
+                        throw py::type_error("stereo_parse_imu_buffer: imu_buffer 必须是 bytearray (uint8_t 类型)");
+                  }
+                  if (imu_buf_info.ndim != 1) {
+                        throw py::value_error("stereo_parse_imu_buffer: imu_buffer 必须是 1 维缓冲区");
+                  }
+                  if (imu_buf_info.ptr == nullptr) {
+                        throw std::runtime_error("stereo_parse_imu_buffer: imu_buffer 指针为空");
+                  }
+
+                  // 2. 校验输出参数是 ImuSubnodeData 实例，并获取底层 C 指针
+                  imu_subnode_data_t* imu_data_ptr = imu_subnode_data_obj.cast<imu_subnode_data_t*>();
+                  if (imu_data_ptr == nullptr) {
+                        throw py::type_error("stereo_parse_imu_buffer: imu_subnode_data 必须是 ImuSubnodeData 实例");
+                  }
+
+                  // 3. 调用 C 函数（类型匹配，无编译/运行错误）
+                  stereo_parse_imu_buffer(imu_buf_info.ptr, imu_data_ptr);
+            },
+            py::arg("imu_buffer"), py::arg("imu_subnode_data"),
+            R"(解析 IMU 缓冲区数据到 ImuSubnodeData 对象
+            功能：将 IMU 原始缓冲区的第一个数据拷贝到 ImuSubnodeData 实例中
+            参数：
+            imu_buffer: bytearray - 1 维 uint8_t 缓冲区，存放 IMU 原始数据
+            imu_subnode_data: ImuSubnodeData - 用于接收解析后数据的实例
+            异常：
+            TypeError: 缓冲区类型错误 / 输出参数不是 ImuSubnodeData 实例
+            ValueError: 缓冲区维度不是 1 维
+            RuntimeError: 缓冲区指针为空
+            )"); 
 }
