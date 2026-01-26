@@ -43,9 +43,11 @@ def print_all_init_values(args, client_fd, stream_info, intr, calib_data):
     # 4.1 model_version 数组
     print(f"    model_version (模型版本): ", end="")
     version_str = ""
-    for i in range(32):
+    for i in range(stereo.MODEL_VERSION_LEN):
         try:
-            val = int(stream_info.get_model_version(i))
+            char_val = stream_info.get_model_version(i)
+            val = ord(char_val) if isinstance(char_val, str) else int(char_val)
+            
             if 32 <= val <= 127:
                 version_str += chr(val)
             elif val == 0:

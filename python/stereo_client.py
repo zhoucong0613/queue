@@ -8,6 +8,7 @@ import stereo_utils
 import struct
 import numpy as np
 import stereo_client_py as stereo
+from stereo_render import show_single_camera_py
 
 VERBOSE_MODE_DEFAULT = 0
 DUMPFILE_MODE_DEFAULT = 0
@@ -26,6 +27,17 @@ running = 0
 client_data_thread = None
 consumer_thread = None
 imu_data = None
+
+latest_right = None
+latest_left = None
+latest_depth = None
+latest_imu = None
+
+# 锁
+lock_right = threading.Lock()
+lock_left = threading.Lock()
+lock_depth = threading.Lock()
+lock_imu = threading.Lock()
 
 def signal_handle(signum, frame):
     print("\n=====================================")
@@ -70,59 +82,88 @@ def parse_args():
     return args
 
 def client_recv_data():
-    print("[Thread] client_recv_data ==> Start")
     global running, client_fd, stream_info, imu_data
+    global latest_right, latest_left, latest_depth, latest_imu
 
-    # 设置缓冲区大小，增加兜底值防止total_size为0
-    buffer_size = stream_info.total_size 
+    buffer_size = stream_info.total_size
     print(f"[Producer] Buffer size set to: {buffer_size} bytes")
 
     while running:
         recv_buffer = bytearray(buffer_size)
-        received_bytes = stereo.stereo_client_recv_data(client_fd, recv_buffer)
-        time.sleep(0.001)
+        mv = memoryview(recv_buffer)
 
-        header_check_ret = stereo.client_check_stream_header(recv_buffer)
-        if header_check_ret != 0:
+        ret_bytes = stereo.stereo_client_recv_data(client_fd, mv)
+
+        if stereo.client_check_stream_header(mv) != 0:
             print("[Client] Header Error")
             running = False
             break
 
-        ret_code, depth_offset, depth_size = stereo.client_get_buffer_size_by_type(recv_buffer, stereo.STREAM_NODE_DEPTH)
-        if ret_code == 0:
-            depth_bytes = recv_buffer[depth_offset : depth_offset + depth_size]
-            depth_buffer = np.frombuffer(depth_bytes, dtype=np.uint16)
-            stereo.show_depth_map(depth_buffer, depth_size, STEREO_RES_WIDTH, STEREO_RES_HEIGHT)
-                       
-        ret_code, right_offset, right_size = stereo.client_get_buffer_size_by_type(recv_buffer, stereo.STREAM_NODE_CAM_RIGHT)
-        if ret_code == 0:
-            right_buffer = recv_buffer[right_offset : right_offset + right_size]
-            stereo.show_single_camera(right_buffer, right_size, SELECTED_MODE_DEFAULT, "Right Camera")
-        
-        ret_code, left_offset, left_size = stereo.client_get_buffer_size_by_type(recv_buffer, stereo.STREAM_NODE_CAM_LEFT)
-        if ret_code == 0:
-            left_buffer = recv_buffer[left_offset : left_offset + left_size]
-            stereo.show_single_camera(left_buffer, left_size, SELECTED_MODE_DEFAULT, "Left Camera")
+        # Depth
+        try:
+            depth_mv, depth_size = stereo.client_get_buffer_size_by_type(mv, stereo.STREAM_NODE_DEPTH)
+            depth_array = np.frombuffer(depth_mv, dtype=np.uint16).copy()
+            with lock_depth:
+                latest_depth = (depth_array, depth_size)
+        except RuntimeError:
+            pass
 
-        ret_code, imu_offset, imu_size = stereo.client_get_buffer_size_by_type(recv_buffer, stereo.STREAM_NODE_IMU)
-        if ret_code == 0:
-            imu_buffer = recv_buffer[imu_offset : imu_offset + imu_size]
-            stereo.stereo_parse_imu_buffer(imu_buffer, imu_data)
-            print(f"时间戳 (timestamp): {imu_data.timestamp}")
-            print(f"加速度计 - ax: {imu_data.ax:.6f}, ay: {imu_data.ay:.6f}, az: {imu_data.az:.6f} (m/s²)")
-            print(f"陀螺仪 - gx: {imu_data.gx:.6f}, gy: {imu_data.gy:.6f}, gz: {imu_data.gz:.6f} (rad/s)")
-        else:
-            print(f"获取IMU缓冲区失败，ret_code={ret_code}，imu_size={imu_size}")            
-        time.sleep(0.0001)
+        # Right Camera
+        try:
+            right_mv, right_size = stereo.client_get_buffer_size_by_type(mv, stereo.STREAM_NODE_CAM_RIGHT)
+            with lock_right:
+                latest_right = (bytes(right_mv), right_size)
+        except RuntimeError:
+            pass
 
-    print("[Thread] client_recv_data ==> Quit")
+        # Left Camera
+        try:
+            left_mv, left_size = stereo.client_get_buffer_size_by_type(mv, stereo.STREAM_NODE_CAM_LEFT)
+            with lock_left:
+                latest_left = (bytes(left_mv), left_size)
+        except RuntimeError:
+            pass
+
+        # IMU
+        try:
+            imu_mv, imu_size = stereo.client_get_buffer_size_by_type(mv, stereo.STREAM_NODE_IMU)
+            stereo.stereo_parse_imu_buffer(imu_mv, imu_data)
+            with lock_imu:
+                latest_imu = imu_data
+        except RuntimeError:
+            pass
 
 def consumer_process():
-    print("[Thread] consumer_process ==> Start")
-    global running
+    global running, latest_right, latest_left, latest_depth, latest_imu
+
     while running:
+        # Right
+        with lock_right:
+            if latest_right:
+                mv, size = latest_right
+                show_single_camera_py(mv, size, SELECTED_MODE_DEFAULT, "Right Camera")
+
+        # Left
+        with lock_left:
+            if latest_left:
+                mv, size = latest_left
+                show_single_camera_py(mv, size, SELECTED_MODE_DEFAULT, "Left Camera")
+
+        # # Depth
+        # with lock_depth:
+        #     if latest_depth:
+        #         depth_buffer, depth_size = latest_depth
+        #         stereo.show_depth_map(depth_buffer, depth_size, STEREO_RES_WIDTH, STEREO_RES_HEIGHT)
+
+        # IMU
+        with lock_imu:
+            if latest_imu:
+                imu_data_item = latest_imu
+                print(f"时间戳 (timestamp): {imu_data_item.timestamp}")
+                print(f"加速度计 - ax: {imu_data_item.ax:.6f}, ay: {imu_data_item.ay:.6f}, az: {imu_data_item.az:.6f}")
+                print(f"陀螺仪 - gx: {imu_data_item.gx:.6f}, gy: {imu_data_item.gy:.6f}, gz: {imu_data_item.gz:.6f}")
+                
         time.sleep(0.001)
-    print("[Thread] consumer_process ==> Quit")
 
 def main():
 
