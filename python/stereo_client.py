@@ -9,6 +9,7 @@ import struct
 import numpy as np
 import stereo_client_py as stereo
 from stereo_render import show_single_camera_py
+from stereo_render import render_depth_py
 
 VERBOSE_MODE_DEFAULT = 0
 DUMPFILE_MODE_DEFAULT = 0
@@ -149,11 +150,14 @@ def consumer_process():
                 mv, size = latest_left
                 show_single_camera_py(mv, size, SELECTED_MODE_DEFAULT, "Left Camera")
 
-        # # Depth
-        # with lock_depth:
-        #     if latest_depth:
-        #         depth_buffer, depth_size = latest_depth
-        #         stereo.show_depth_map(depth_buffer, depth_size, STEREO_RES_WIDTH, STEREO_RES_HEIGHT)
+        # Depth
+        with lock_depth:
+            if latest_depth:
+                depth_buffer, depth_size = latest_depth
+                # stereo.show_depth_map(depth_buffer, depth_size, STEREO_RES_WIDTH, STEREO_RES_HEIGHT)
+                render_depth_py(depth_buffer, STEREO_RES_WIDTH, STEREO_RES_HEIGHT,
+                                    need_speckle_filter=True, need_value_show=True,
+                                    waitkey_time=1, win_name="Depth Map")
 
         # IMU
         with lock_imu:
