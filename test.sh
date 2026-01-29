@@ -11,4 +11,4 @@ export LD_LIBRARY_PATH="${LIB_DIR}:${LD_LIBRARY_PATH}"
 
 sudo ifconfig ${INTERFACE} mtu 9000
 
-./stereo_client -i ${INTERFACE} -s ${SERVER_IP} -m 1 -p
+./stereo_client -i ${INTERFACE} -s ${SERVER_IP} -m 1 -p 1

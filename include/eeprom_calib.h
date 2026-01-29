@@ -5,11 +5,11 @@
 #define SN_FILENAME         "sn_info.txt"
 
 /* ==================== 标定数据地址映射==================== */
-#define ADDR_HEAD_INFO      0x0000  // 头信息（16字节）
-#define ADDR_L_CALIB        0x0010  // 左相机参数（56字节）
-#define ADDR_R_CALIB        0x0048  // 右相机参数（56字节）
-#define ADDR_STEREO_PARAM   0x0080  // 双目联合参数（12字节）
-#define ADDR_EXTRINSIC      0x008C  // 外参（48字节）
+#define ADDR_HEAD_INFO      0x0000  // 头信息
+#define ADDR_L_CALIB        0x0010  // 左相机参数
+#define ADDR_R_CALIB        0x0048  // 右相机参数
+#define ADDR_STEREO_PARAM   0x0080  // 双目联合参数
+#define ADDR_EXTRINSIC      0x008C  // 外参
 #define ADDR_HEAD_CHECKSUM  0x000F  // 头校验和
 #define ADDR_LR_CHECKSUM    0x0124  // LR校验和
 
@@ -76,7 +76,6 @@ typedef struct {
     uint8_t              lr_checksum;
     SnData_t             sn; 
 } CompleteCalibData_t;
-
 
 int eeprom_calib_verify(CompleteCalibData_t* calib);
 int eeprom_calib_verify_sn(const SnData_t* sn);

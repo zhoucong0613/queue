@@ -134,6 +134,8 @@ PYBIND11_MODULE(stereo_client_py, m) {
         .export_values();
 
     m.attr("STREAM_NODE_TYPE_NUM") = STREAM_NODE_TYPE_NUM;
+    m.attr("MODE_RAW_DEPTH") = MODE_RAW_DEPTH;
+    m.attr("MODE_ISP_DEPTH") = MODE_ISP_DEPTH;
     m.attr("MODE_DEFAULT") = MODE_DEFAULT;
     m.attr("MODEL_VERSION_LEN") = 32;
     m.attr("FLAG_LEN") = 8;

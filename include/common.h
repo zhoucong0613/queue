@@ -4,11 +4,9 @@
 #include <stdint.h>
 
 #define SERVER_PORT 		8100
-
 #define STEREO_RES_WIDTH	640
 #define STEREO_RES_HEIGHT	352
 #define DEPTH_SIZE			(STEREO_RES_WIDTH * STEREO_RES_HEIGHT * sizeof(uint16_t))
-
 #define STREAM_INFO_JSON_STR_LEN	2048
 
 typedef enum {
@@ -42,7 +40,6 @@ typedef struct {
 
 int check_network(const char *ifname);
 int client_init(const char *server_ip);
-
 
 #endif
 

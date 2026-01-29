@@ -1,6 +1,7 @@
 #include <stdio.h>
-#include <getopt.h>
+#include <stdint.h>
 #include <unistd.h>
+#include <getopt.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <fcntl.h>
@@ -11,9 +12,7 @@
 #include <signal.h>
 #include <ctype.h>
 #include <errno.h>
-#include <stdint.h>
 #include <net/if.h>
-#include <unistd.h>
 #include <arpa/inet.h>
 #include <netinet/in.h>
 #include <omp.h>
@@ -27,19 +26,11 @@
 #include "common.h"
 #include "stereo_client.h"
 
-typedef struct {
-    float x;
-	float y;
-	float z;
-} PointCloud;
-
 static int client_fd;
 static pthread_t client_data_thread;
 static pthread_t consumer_thread;
 static sync_queue_t recv_to_consumer;
-
 static server_stream_info_t stream_info = {0};
-
 static int32_t running = 0;
 
 static CameraIntrinsics intr = {0, 0, 0, 0, 0}; 
@@ -58,13 +49,18 @@ static uint32_t verbose_mode = 0;
 #define VERBOSE_DEPTH_POINTCLOUD	(1<<2)
 #define VERBOSE_IMU					(1<<3)
 
-static int preview_flag = 0;
+static uint32_t preview_mode = 0;
+#define PREVIEW_DEPTH				(1<<0)
+#define PREVIEW_LEFT				(1<<1)
+#define PREVIEW_RIGHT				(1<<2)
 
 static int selected_mode = MODE_DEFAULT;
 
-void signal_handle(int signo) {
-	running = 0;
-}
+typedef struct {
+    float x;
+	float y;
+	float z;
+} PointCloud;
 
 void depth_to_pointcloud(
     const uint16_t* depth_data,
@@ -159,6 +155,10 @@ static void client_parse_imu_buffer(void *imu_buffer, uint32_t imu_size)
 	}
 }
 
+void signal_handle(int signo) {
+	running = 0;
+}
+
 void *client_recv_data(void *context)
 {
 	int ret;
@@ -250,20 +250,15 @@ void *consumer_process(void *context)
 			goto consumer_release;
 		}
 		
-		#if 1
 		/* Depth To Preview */
 		if (0 == client_get_buffer_size_by_type((uint8_t *)data_item->items, STREAM_NODE_DEPTH, (void **)&depth_buffer, &depth_size)) {
 		
-			if (preview_flag && depth_buffer != NULL && depth_size > 0) {
-
+			// Preview: Depth
+			if (preview_mode & PREVIEW_DEPTH) {
 			   show_depth_map((uint16_t *)depth_buffer, depth_size, STEREO_RES_WIDTH, STEREO_RES_HEIGHT);
-
 			}    
 		}
 		
-		#endif
-
-		#if 1
 		/* Depth To Cloudpoint */
 		if (0 == client_get_buffer_size_by_type((uint8_t *)data_item->items, STREAM_NODE_DEPTH, (void **)&depth_buffer, &depth_size)) {
 			performance_test_start_simple(&performace_total_depth2cloud);
@@ -277,8 +272,6 @@ void *consumer_process(void *context)
 				printf("[%ld] Client Get Depth: size[%d].\n", get_current_timestamp_us(), depth_size);
 			}
 
-
-			//printf("dumpfile_mode == %d\n",dumpfile_mode);
 			// Dump File
 			if (dumpfile_mode != 0) {
 				dump_cnt++;
@@ -286,8 +279,6 @@ void *consumer_process(void *context)
 					dump_file = 1;
 				}
 			}
-
-			//printf("dump_file== %d\n",dump_file);
 
 			if (dump_file && (dumpfile_mode & DUMP_DEPTH_FILE)) {
 				char depth_pic_name[64] ={0};
@@ -300,15 +291,14 @@ void *consumer_process(void *context)
 				save_pointcloud_to_txt(pointcloud_pic_name, pc, STEREO_RES_HEIGHT, STEREO_RES_WIDTH);
 			}
 		}
-		#endif
 
-		#if 1
 		/* Right Camera Data */
 		if (0 == client_get_buffer_size_by_type((uint8_t *)data_item->items, STREAM_NODE_CAM_RIGHT, (void **)&right_buffer, &right_size)) {
 
-			// if (preview_flag) {
-        	// 	show_single_camera(right_buffer, right_size, selected_mode, "Right Camera");
-    		// }
+			// Preview: Right
+			if (preview_mode & PREVIEW_RIGHT) {
+        		show_single_camera(right_buffer, right_size, selected_mode, "Right Camera");
+    		}
 
 			// Verbose: Right
 			if (verbose_mode & VERBOSE_LR_RAW_NV12) {
@@ -317,7 +307,6 @@ void *consumer_process(void *context)
 			// DumpFile: Right
 			if (dump_file && (dumpfile_mode & DUMP_LR_RAW_NV12)) {
 				char right_pic_name[64] ={0};
-				// sprintf(right_pic_name, "right_%d.yuv", dump_cnt);
 				snprintf(right_pic_name,  sizeof(right_pic_name), "Right_client_Raw_cnt[%d].yuv", dump_cnt);
 				dumpToFile(right_pic_name, (char *)right_buffer, right_size);
 			}
@@ -326,9 +315,10 @@ void *consumer_process(void *context)
 		/* Left Camera Data */
 		if (0 == client_get_buffer_size_by_type((uint8_t *)data_item->items, STREAM_NODE_CAM_LEFT, (void **)&left_buffer, &left_size)) {
 
-			// if (preview_flag) {
-        	// 	show_single_camera(left_buffer, left_size, selected_mode, "Left Camera");
-    		// }
+			// Preview: Left
+			if (preview_mode & PREVIEW_LEFT) {
+        		show_single_camera(left_buffer, left_size, selected_mode, "Left Camera");
+    		}
 
 			// Verbose: Left
 			if (verbose_mode & VERBOSE_LR_RAW_NV12) {
@@ -347,8 +337,6 @@ void *consumer_process(void *context)
 			client_parse_imu_buffer(imu_buffer, imu_size);
 		}
 		
-		#endif
-
 		dump_file = 0;
 
 consumer_release:
@@ -370,7 +358,7 @@ static struct option const long_options[] = {
 	{"interface", required_argument, NULL, 'i'},
 	{"server", required_argument, NULL, 's'},
 	{"verbose", required_argument, NULL, 'v'},
-	{"preview", no_argument, NULL, 'p'},
+	{"preview", required_argument, NULL, 'p'},
 	{"dump", required_argument, NULL, 'd'},
 	{"mode", required_argument, NULL, 'm'},
 	{NULL, 0, NULL, 0}
@@ -383,10 +371,10 @@ static void print_help(void)
 	printf("-i, --interface=\"Network interface\"\n");
 	printf("-s, --server=\"Server ip\"\n");
 	printf("-v, --verbose\tEnable verbose mode\n");
+	printf("-d, --dump\tDump captured frames to file\n");
 	printf("-m, --mode\tSet working mode (1: raw, 2: isp, default: 1)\n");
 	printf("-p, --preview\tPreview depth (JET) and RGB frames in real-time\n");
 }
-
 
 int main(int argc, char** argv)
 {
@@ -400,7 +388,7 @@ int main(int argc, char** argv)
 		return 0;
 	}
 
-	while ((c = getopt_long(argc, argv, "i:s:d:v:m:p", long_options, NULL)) != -1) {
+	while ((c = getopt_long(argc, argv, "i:s:d:v:m:p:", long_options, NULL)) != -1) {
 		switch (c) {
 		case 'i':
 			strcpy(ifname, optarg);
@@ -415,7 +403,7 @@ int main(int argc, char** argv)
 			dumpfile_mode = atoi(optarg);
 			break;
 		case 'p':
-            preview_flag = 1;
+            preview_mode = atoi(optarg);
             break;
 		case 'm':
 			selected_mode = atoi(optarg);
@@ -426,6 +414,7 @@ int main(int argc, char** argv)
 		}
 
 	}
+
 	signal(SIGINT, signal_handle);
 
 	client_fd = stereo_client_create(ifname, server_ip);

@@ -12,7 +12,6 @@
 #define QUEUE_LOG(...)
 #endif
 
-
 int sync_queue_add_user(sync_queue_t *sync_queue){
 
 	sync_queue->user_count++;

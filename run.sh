@@ -4,7 +4,7 @@ SCRIPT_DIR=$(cd $(dirname $0); pwd)
 LIB_DIR="${SCRIPT_DIR}/lib"
 PY_SCRIPT="${SCRIPT_DIR}/python/stereo_client.py"
 
-RUN_ARGS="-i usb0 -s 192.168.5.5 -m 1"
+RUN_ARGS="-i usb0 -s 192.168.5.5 -m 1 -p 1"
 
 export PYTHONPATH="${LIB_DIR}:${PYTHONPATH}"
 export LD_LIBRARY_PATH="${LIB_DIR}:${LD_LIBRARY_PATH}"
@@ -26,7 +26,6 @@ if [ ! -f "${LIB_DIR}/libstereo.so" ]; then
     echo "请先在根目录执行 make 编译生成库文件！"
     exit 1
 fi
-
 
 python3 "${PY_SCRIPT}" ${RUN_ARGS}
 
