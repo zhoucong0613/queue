@@ -46,10 +46,15 @@ calib_data = None
 client_data_thread = None
 consumer_thread = None
 
-depth_q = Queue(maxsize=6)
-left_q = Queue(maxsize=6)
-right_q = Queue(maxsize=6)
-imu_q = Queue(maxsize=50)
+latest_right = None
+latest_left = None
+latest_depth = None
+latest_imu = None
+
+lock_right = threading.Lock()
+lock_left = threading.Lock()
+lock_depth = threading.Lock()
+lock_imu = threading.Lock()
 
 def dump_to_file(filename, src_buf, size):
     try:
@@ -77,6 +82,8 @@ def client_parse_imu_buffer(imu_data):
 
 def client_recv_data():
     global running, client_fd, stream_info, imu_data
+    global latest_depth, latest_left, latest_right, latest_imu
+    global lock_depth, lock_left, lock_right, lock_imu
 
     buffer_size = stream_info.total_size
     print(f"[Producer] Buffer size set to: {buffer_size} bytes")
@@ -98,19 +105,16 @@ def client_recv_data():
         try:
             depth_mv, depth_size = stereo.client_get_buffer_size_by_type(mv, stereo.STREAM_NODE_DEPTH)
             depth_array = np.frombuffer(depth_mv, dtype=np.uint16).copy()
-            try:
-                depth_q.put_nowait((depth_array, depth_size))
-            except:
-                pass
+            with lock_depth:
+                latest_depth = (depth_array, depth_size)
         except RuntimeError:
             pass
 
         # Right Camera
         try:
             right_mv, right_size = stereo.client_get_buffer_size_by_type(mv, stereo.STREAM_NODE_CAM_RIGHT)
-            try:
-                right_q.put_nowait((bytes(right_mv), right_size))
-            except:
+            with lock_right:
+                latest_right = (bytes(right_mv), right_size)
                 pass
         except RuntimeError:
             pass
@@ -118,10 +122,8 @@ def client_recv_data():
         # Left Camera
         try:
             left_mv, left_size = stereo.client_get_buffer_size_by_type(mv, stereo.STREAM_NODE_CAM_LEFT)
-            try:
-                left_q.put_nowait((bytes(left_mv), left_size))
-            except:
-                pass
+            with lock_left:
+                latest_left = (bytes(left_mv), left_size)
         except RuntimeError:
             pass
 
@@ -129,79 +131,74 @@ def client_recv_data():
         try:
             imu_mv, imu_size = stereo.client_get_buffer_size_by_type(mv, stereo.STREAM_NODE_IMU)
             stereo.stereo_parse_imu_buffer(imu_mv, imu_data)
-            try:
-                imu_q.put_nowait(imu_data)
-            except:
-                pass
+            with lock_imu:
+                latest_imu = imu_data
         except RuntimeError:
             pass
 
 def consumer_process():
     global running, preview_mode, dumpfile_mode, verbose_mode, dump_cnt, selected_mode
     global dump_depth_cnt, dump_right_cnt, dump_left_cnt
+    global latest_depth, latest_left, latest_right, latest_imu
+    global lock_depth, lock_left, lock_right, lock_imu
 
     while running:
+
         #depth
-        try:
-            depth_buffer, depth_size = depth_q.get_nowait()
-            dump_depth_cnt += 1
+        with lock_depth:
+            if latest_depth:
+                depth_buffer, depth_size = latest_depth
+                dump_depth_cnt += 1
 
-            if preview_mode & PREVIEW_DEPTH:
-                 # stereo.show_depth_map(depth_buffer, depth_size, STEREO_RES_WIDTH, STEREO_RES_HEIGHT)
-                render_depth_py(depth_buffer, STEREO_RES_WIDTH, STEREO_RES_HEIGHT, need_speckle_filter=True, need_value_show=False, waitkey_time=1, win_name="Depth Map")
+                if preview_mode & PREVIEW_DEPTH:
+                    # stereo.show_depth_map(depth_buffer, depth_size, STEREO_RES_WIDTH, STEREO_RES_HEIGHT)
+                    render_depth_py(depth_buffer, STEREO_RES_WIDTH, STEREO_RES_HEIGHT, need_speckle_filter=True, need_value_show=False, waitkey_time=1, win_name="Depth Map")
 
-            if verbose_mode & VERBOSE_DEPTH:
-                ts = get_current_timestamp_us()
-                print(f"[{ts}] [Verbose] Depth data, size={depth_size}")
+                if verbose_mode & VERBOSE_DEPTH:
+                    ts = get_current_timestamp_us()
+                    print(f"[{ts}] [Verbose] Depth data, size={depth_size}")
 
-            if (dumpfile_mode & DUMP_DEPTH_FILE) and (dump_depth_cnt % 10 == 0):
-                dump_to_file(f"depth_{dump_depth_cnt}.bin", depth_buffer, depth_size)
-        except Empty:
-            pass
+                if (dumpfile_mode & DUMP_DEPTH_FILE) and (dump_depth_cnt % 10 == 0):
+                    dump_to_file(f"depth_{dump_depth_cnt}.bin", depth_buffer, depth_size)
 
         # Right
-        try:
-            right_buffer, right_size = right_q.get_nowait()
-            dump_right_cnt += 1
+        with lock_right:
+            if latest_right:
+                right_buffer, right_size = latest_right
+                dump_right_cnt += 1
 
-            if preview_mode & PREVIEW_RIGHT:
-                show_single_camera_py(right_buffer, right_size, selected_mode, "Right Camera")
+                if preview_mode & PREVIEW_RIGHT:
+                    show_single_camera_py(right_buffer, right_size, selected_mode, "Right Camera")
 
-            if verbose_mode & VERBOSE_LR_RAW_NV12:
-                ts = get_current_timestamp_us()
-                print(f"[{ts}] Right NV12, size={right_size}")
+                if verbose_mode & VERBOSE_LR_RAW_NV12:
+                    ts = get_current_timestamp_us()
+                    print(f"[{ts}] Right NV12, size={right_size}")
 
-            if (dumpfile_mode & DUMP_LR_RAW_NV12) and (dump_right_cnt % 10 == 0):
-                dump_to_file(f"Right_{dump_right_cnt}.yuv", right_buffer, right_size)
+                if (dumpfile_mode & DUMP_LR_RAW_NV12) and (dump_right_cnt % 10 == 0):
+                    dump_to_file(f"Right_{dump_right_cnt}.yuv", right_buffer, right_size)
 
-        except Empty:
-            pass    
+        with lock_left:
+            if latest_left:
+                left_buffer, left_size = latest_left
+                dump_left_cnt += 1
+                dump_left_file = (dumpfile_mode != 0 and dump_left_cnt % 10 == 0)
 
-        try:
-            left_buffer, left_size = left_q.get_nowait()
-            dump_left_cnt += 1
-            dump_left_file = (dumpfile_mode != 0 and dump_left_cnt % 10 == 0)
+                if preview_mode & PREVIEW_LEFT:
+                    # stereo.show_single_camera(mv, size, selected_mode, "Left Camera"
+                    show_single_camera_py(left_buffer, left_size, selected_mode, "Left Camera")
 
-            if preview_mode & PREVIEW_LEFT:
-                # stereo.show_single_camera(mv, size, selected_mode, "Left Camera"
-                show_single_camera_py(left_buffer, left_size, selected_mode, "Left Camera")
+                if verbose_mode & VERBOSE_LR_RAW_NV12:
+                    ts = get_current_timestamp_us()
+                    print(f"[{ts}] Left NV12, size={left_size}")
 
-            if verbose_mode & VERBOSE_LR_RAW_NV12:
-                ts = get_current_timestamp_us()
-                print(f"[{ts}] Left NV12, size={left_size}")
-
-            if (dumpfile_mode & DUMP_LR_RAW_NV12) and (dump_left_cnt % 10 == 0):
-                dump_to_file(f"Left_{dump_left_cnt}.yuv", left_buffer, left_size)
-                
-        except Empty:
-            pass
+                if (dumpfile_mode & DUMP_LR_RAW_NV12) and (dump_left_cnt % 10 == 0):
+                    dump_to_file(f"Left_{dump_left_cnt}.yuv", left_buffer, left_size)
                 
         # IMU
-        try:
-            imu_item = imu_q.get_nowait()
-            client_parse_imu_buffer(imu_item)
-        except Empty:
-            pass
+        with lock_imu:
+            if latest_imu:
+                imu_item = latest_imu
+                client_parse_imu_buffer(imu_item)
 
         time.sleep(0.001)
 
