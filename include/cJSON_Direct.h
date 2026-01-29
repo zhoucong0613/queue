@@ -1,7 +1,6 @@
 #ifndef _CJSON_DIRECT_H_
 #define _CJSON_DIRECT_H_
 
-
 typedef enum {
 	KEY_TYPE_NULL,
 	KEY_TYPE_S8,        // 有符号8位整型
@@ -20,7 +19,6 @@ typedef enum {
 	KEY_TYPE_MAX
 }key_type_e;
 
-
 typedef struct key_info_s{
 	int csize;					///< 本结构体大小
 	key_type_e type;				///< 成员类型
@@ -32,11 +30,9 @@ typedef struct key_info_s{
 	key_type_e arraytype;		///< 对于#KEY_TYPE_ARRAY类型，其成员的类型
 }key_info_t;
 
-
 /*成员在结构体中的偏移地址*/
 #define NAME_OFFSET(type, name) (offsetof(type, name))
 #define NAME_SIZE(type,name) (sizeof((((type *)0)->name)))
-
 
 /**
  *@brief 形成结构体
@@ -52,7 +48,6 @@ typedef struct key_info_s{
 
 #define MAKE_KEY_INFO(ctype, ktype, kname, subkey) MAKE_ARRAY_INFO(ctype, ktype, kname, subkey, 0, KEY_TYPE_NULL)
 #define MAKE_END_INFO()	{0, KEY_TYPE_NULL, NULL, 0, 0, NULL}
-
 
 /**
  *@brief

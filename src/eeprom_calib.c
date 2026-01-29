@@ -8,10 +8,9 @@
 #include <ctype.h>
 #include <linux/i2c.h>
 #include <linux/i2c-dev.h>
-#include <cstdint>
+#include <stdint.h>
 
 #include "eeprom_calib.h"
-
 
 static uint8_t calc_checksum(const void* data, uint32_t len) {
     if (!data || len == 0) return 0;

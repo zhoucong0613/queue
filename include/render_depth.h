@@ -1,9 +1,12 @@
 #ifndef RENDER_DEPTH_H
 #define RENDER_DEPTH_H
 
-#include <opencv2/opencv.hpp>
-#include <cstdint>
-#include <cstddef>
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+#include <stdint.h>
+#include <stddef.h>
 
 /**
  * @brief 显示单个相机的NV12格式图像
@@ -22,5 +25,9 @@ void show_single_camera(uint8_t *cam_buffer, uint32_t cam_size, int mode, const 
  * @param height 深度图高度
  */
 void show_depth_map(uint16_t *depth_buffer, size_t depth_size, int width, int height);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif // RENDER_DEPTH_H

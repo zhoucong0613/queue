@@ -1,12 +1,12 @@
 #ifndef _COMMON_H_
 #define _COMMON_H_
 
-#define SERVER_PORT 		8100
+#include <stdint.h>
 
+#define SERVER_PORT 		8100
 #define STEREO_RES_WIDTH	640
 #define STEREO_RES_HEIGHT	352
 #define DEPTH_SIZE			(STEREO_RES_WIDTH * STEREO_RES_HEIGHT * sizeof(uint16_t))
-
 #define STREAM_INFO_JSON_STR_LEN	2048
 
 typedef enum {
@@ -16,7 +16,7 @@ typedef enum {
 	STREAM_NODE_IMU,
 	STREAM_NODE_TAIL
 } stream_node_type_t;
-#define STREAM_NODE_TYPE_NUM	STREAM_NODE_TAIL
+#define STREAM_NODE_TYPE_NUM	4
 
 #define STREAM_HEADER_MAGIC 0x0425BEEF
 
@@ -40,7 +40,6 @@ typedef struct {
 
 int check_network(const char *ifname);
 int client_init(const char *server_ip);
-
 
 #endif
 

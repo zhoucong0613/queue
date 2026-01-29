@@ -1,10 +1,13 @@
 #ifndef H_SYNCHRONOUS_PRODUCT_AND_CONSUM_QUEUE__H
 #define H_SYNCHRONOUS_PRODUCT_AND_CONSUM_QUEUE__H
+
 #include <stdint.h>
 #include <pthread.h>
 
 #include "mqueue.h"
+
 #define SYNC_QUEUE_MAX_USER 5
+
 typedef struct data_item_s{
 	int is_init_added; //初始化过程中会向 unused队列中添加数据，但是不用归还内存
 	int item_count;
@@ -40,11 +43,9 @@ typedef struct sync_queue_info_s{
 
 typedef struct sync_queue_s{
 	int user_count; //inused queue
-
 	tsQueue ununsed_queue;
 	tsQueue inused_queue;
 	int inused_queue_count;
-
 	sync_queue_info_t sync_queue_info;
 }sync_queue_t;
 
