@@ -155,11 +155,9 @@ int eeprom_calib_save_sn_to_file(const SnData_t* sn) {
     fprintf(fp, "===================================== SN 信息 =====================================\n");
     fprintf(fp, "分辨率：%c（%s）\n", sn->resolution,
             sn->resolution == '0' ? "VGA" : (sn->resolution == '1' ? "HD" : "FHD"));
-    fprintf(fp, "芯片厂商：%c（%s）\n", vendor,
-            vendor == 'O' ? "OV" : (vendor == 'T' ? "思特威" : "未知"));
+    fprintf(fp, "芯片厂商：%c\n", vendor);
     fprintf(fp, "模组型号：%c%c%c\n", sn->model1, sn->model2, sn->model3);
-    fprintf(fp, "生产日期：%d年%d月%d日（原始ASCII：%c月%c日）\n",
-            year, month_num, day_num, sn->month, sn->day);
+    fprintf(fp, "生产日期：%d年%d月%d日\n", year, month_num, day_num);
     fprintf(fp, "唯一标识：%.*s\n", 5, sn->unique);
     fprintf(fp, "校验和：0x%02X\n", (uint8_t)sn->checksum);
     fprintf(fp, "==================================================================================\n");
